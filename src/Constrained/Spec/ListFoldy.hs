@@ -133,34 +133,31 @@ compareWit x y = case (eqT @t1 @t2, eqT @bs1 @bs2, eqT @r1 @r2) of
 -- Logic instances for IdW, FlipW and ComposeW
 -- Also their Haskell implementations id_ flip_ composeFn
 
-instance Logic FunW
-  -- propagate ctxt (ExplainSpec [] s) = propagate ctxt s
-  -- propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
-  -- propagate _ (ErrorSpec msgs) = ErrorSpec msgs
-  -- propagate (Context IdW (HOLE :<> End)) spec = spec
-  -- propagate ctxt _ = ErrorSpec (NE.fromList ["IdW (id_)", "Unreachable context, too many args", show ctxt])
+instance Logic FunW where
+  propagate ctxt (ExplainSpec [] s) = propagate ctxt s
+  propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
+  propagate _ (ErrorSpec msgs) = ErrorSpec msgs
+  propagate (Context IdW (HOLE :<> End)) spec = spec
+  propagate (Context (FlipW f) (HOLE :<> v :<| End)) spec = propagate (Context f (v :|> HOLE :<> End)) spec
+  propagate (Context (FlipW f) (v :|> HOLE :<> End)) spec = propagate (Context f (HOLE :<> v :<| End)) spec
+  propagate (Context (ComposeW (f :: t1' '[b'] r') (g :: t2' '[a'] b'')) (HOLE :<> End)) spec =
+    propagate (Context g (HOLE :<> End)) $ propagate (Context f (HOLE :<> End)) spec
+  propagate _ _ = error "TODO"
 
-  -- mapTypeSpec IdW ts = typeSpec ts
-  -- rewriteRules IdW (x :> Nil) Evidence = Just x
+  mapTypeSpec IdW ts = typeSpec ts
+  mapTypeSpec (ComposeW g h) ts = mapSpec g . mapSpec h $ typeSpec ts
+
+  -- Note we need the Evidence to apply App to f, and to apply App to g
+  rewriteRules (ComposeW f g) (x :> Nil) Evidence = Just $ App f (App g (x :> Nil) :> Nil)
+  rewriteRules IdW (x :> Nil) Evidence = Just x
+  rewriteRules (FlipW f) (a@Lit {} :> b :> Nil) Evidence = Just $ App f (b :> a :> Nil)
+  rewriteRules (FlipW f) (a :> b@Lit {} :> Nil) Evidence = Just $ App f (b :> a :> Nil)
+  rewriteRules (FlipW {}) _ Evidence = Nothing
 
 id_ :: forall a. HasSpec a => Term a -> Term a
 id_ = appTerm IdW
 
--- instance
---   (forall sym t. Logic sym t '[a, b] r, All Typeable [a, b, r]) =>
---   Logic "flip_" FunW '[b, a] r
---   where
---   propagate ctxt (ExplainSpec [] s) = propagate ctxt s
---   propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
---   propagate _ (ErrorSpec msgs) = ErrorSpec msgs
---   propagate (Context (FlipW f) (HOLE :<> v :<| End)) spec = propagate (Context f (v :|> HOLE :<> End)) spec
---   propagate (Context (FlipW f) (v :|> HOLE :<> End)) spec = propagate (Context f (HOLE :<> v :<| End)) spec
---   propagate ctxt@(Context _ _) _ = ErrorSpec (NE.fromList ["FlipW (flip_)", "Unreachable context, too many args", show ctxt])
-
 --   -- Note we need Evidence to apply App to f
---   rewriteRules (FlipW f) (a@Lit {} :> b :> Nil) Evidence = Just $ App f (b :> a :> Nil)
---   rewriteRules (FlipW f) (a :> b@Lit {} :> Nil) Evidence = Just $ App f (b :> a :> Nil)
---   rewriteRules (FlipW {}) _ Evidence = Nothing
 
 flip_ ::
   forall (t :: FSType) a b r.
@@ -174,18 +171,8 @@ flip_ x = appTerm (FlipW x)
 --   ) =>
 --   Logic "composeFn" FunW '[a] r
 --   where
---   propagate ctxt (ExplainSpec [] s) = propagate ctxt s
---   propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
---   propagate _ (ErrorSpec msgs) = ErrorSpec msgs
---   propagate (Context (ComposeW (f :: t1' s1' '[b'] r') (g :: t2' s2' '[a'] b'')) (HOLE :<> End)) spec =
---     propagate @s2' @t2' @'[a'] @b' (Context g (HOLE :<> End)) $
---       propagate @s1' @t1' @'[b'] @r' (Context f (HOLE :<> End)) spec
 --   propagate ctxt@(Context _ _) _ = ErrorSpec (NE.fromList ["ComposeW (composeFn)", "Unreachable context, too many args", show ctxt])
 
-  -- mapTypeSpec (ComposeW g h) ts = mapSpec g . mapSpec h $ typeSpec ts
-
-  -- -- Note we need the Evidence to apply App to f, and to apply App to g
-  -- rewriteRules (ComposeW f g) (x :> Nil) Evidence = Just $ App f (App g (x :> Nil) :> Nil)
 
 compose_ ::
   forall b t1 t2 a r.
@@ -197,7 +184,7 @@ compose_ f g = appTerm $ ComposeW f g -- @b @c1 @c2 @s1 @s2 @t1 @t2 @a @r f g
 
 -- =============================================================
 
-composeFn :: (HasSpec b, HasSpec a, HasSpec c) => Fun '[b] c -> Fun '[a] b -> Fun '[a] c
+composeFn :: (HasSpec b, HasSpec c) => Fun '[b] c -> Fun '[a] b -> Fun '[a] c
 composeFn (Fun f) (Fun g) = (Fun (ComposeW f g))
 
 idFn :: HasSpec a => Fun '[a] a
@@ -416,28 +403,26 @@ instance Show (ListW d r) where
 deriving instance (Eq (ListW d r))
 
 -- ============= Logicbol for FoldMapW
-instance Logic ListW
+instance Logic ListW where
+  propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
+  propagate _ TrueSpec = TrueSpec
+  propagate _ (ErrorSpec msgs) = ErrorSpec msgs
+  propagate (Context (FoldMapW f) (HOLE :<> End)) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App (FoldMapW f) (v' :> Nil)) (v :-> ps)
+  propagate (Context (FoldMapW f) (HOLE :<> End)) (TypeSpec ts cant) =
+    typeSpec (ListSpec Nothing [] TrueSpec TrueSpec $ FoldSpec f (TypeSpec ts cant))
+  propagate (Context (FoldMapW f) (HOLE :<> End)) (MemberSpec es) =
+    typeSpec (ListSpec Nothing [] TrueSpec TrueSpec $ FoldSpec f (MemberSpec es))
+  propagate ctx _ =
+    ErrorSpec $ pure ("Logic instance for FoldMapW with wrong number of arguments. " ++ show ctx)
 
--- instance (Typeable a, Foldy b) => Logic "foldMap_" ListW '[[a]] b where
---   propagate ctxt (ExplainSpec [] s) = propagate ctxt s
---   propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
---   propagate _ TrueSpec = TrueSpec
---   propagate _ (ErrorSpec msgs) = ErrorSpec msgs
---   propagate (Context (FoldMapW f) (HOLE :<> End)) (SuspendedSpec v ps) =
---     constrained $ \v' -> Let (App (FoldMapW f) (v' :> Nil)) (v :-> ps)
---   propagate (Context (FoldMapW f) (HOLE :<> End)) (TypeSpec ts cant) =
---     typeSpec (ListSpec Nothing [] TrueSpec TrueSpec $ FoldSpec f (TypeSpec ts cant))
---   propagate (Context (FoldMapW f) (HOLE :<> End)) (MemberSpec es) =
---     typeSpec (ListSpec Nothing [] TrueSpec TrueSpec $ FoldSpec f (MemberSpec es))
---   propagate ctx _ =
---     ErrorSpec $ pure ("Logic instance for FoldMapW with wrong number of arguments. " ++ show ctx)
+  mapTypeSpec (FoldMapW g) ts =
+    constrained $ \x ->
+      unsafeExists $ \x' ->
+        Assert (x ==. appFun (foldMapFn g) x') <> toPreds x' ts
 
---   mapTypeSpec (FoldMapW g) ts =
---     constrained $ \x ->
---       unsafeExists $ \x' ->
---         Assert (x ==. appFun (foldMapFn g) x') <> toPreds x' ts
 
-foldMap_ :: forall a b. (Sized [a], Foldy b, HasSpec a) => (Term a -> Term b) -> Term [a] -> Term b
+foldMap_ :: forall a b. (Foldy b, HasSpec a) => (Term a -> Term b) -> Term [a] -> Term b
 foldMap_ f = appFun $ foldMapFn $ toFn $ f (V v)
   where
     v = Var (-1) "v" :: Var a
@@ -459,7 +444,7 @@ foldMapFn :: forall a b. (HasSpec a, Foldy b) => Fun '[a] b -> Fun '[[a]] b
 foldMapFn f = Fun (FoldMapW f)
 
 -- | Used in the HasSpec [a] instance
-toPredsFoldSpec :: (HasSpec a, HasSpec [a]) => Term [a] -> FoldSpec a -> Pred
+toPredsFoldSpec :: HasSpec a => Term [a] -> FoldSpec a -> Pred
 toPredsFoldSpec _ NoFold = TruePred
 toPredsFoldSpec x (FoldSpec funAB sspec) =
   satisfies (appFun (foldMapFn funAB) x) sspec

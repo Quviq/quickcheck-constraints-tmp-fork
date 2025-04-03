@@ -83,6 +83,18 @@ import Test.QuickCheck (Arbitrary (..), oneof)
 
 -- ============= InjLeftW ====
 
+data SumW dom rng where
+  InjLeftW :: SumW '[a] (Sum a b)
+  InjRightW :: SumW '[b] (Sum a b)
+
+instance Show (SumW dom rng) where
+  show InjLeftW = "injLeft"
+  show InjRightW = "injRight"
+
+instance Semantics SumW where
+  semantics InjLeftW = SumLeft
+  semantics InjRightW = SumRight
+
 -- instance (HasSpec a, HasSpec b, KnownNat (CountCases b)) => Logic "leftFn" BaseW '[a] (Sum a b) where
 --   propagate ctxt (ExplainSpec [] s) = propagate ctxt s
 --   propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
@@ -104,7 +116,7 @@ import Test.QuickCheck (Arbitrary (..), oneof)
 
 --   -- NOTE: this function over-approximates and returns a liberal spec.
 --   mapTypeSpec f ts = case f of
---     InjLeftW -> typeSpec $ SumSpec Nothing (typeSpec ts) (ErrorSpec (pure "mapTypeSpec InjLeftW"))
+--
 
 leftFn :: (HasSpec a, HasSpec b, KnownNat (CountCases b)) => Term a -> Term (Sum a b)
 leftFn = appTerm InjLeftW

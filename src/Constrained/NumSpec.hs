@@ -747,6 +747,7 @@ instance Logic IntW where
           , "We can't safely subtract " ++ show i ++ " from any choice in the MemberSpec."
           ]
       )
+  propagate _ _ = undefined
 
 addFn :: forall a. NumLike a => Term a -> Term a -> Term a
 addFn = appTerm AddW

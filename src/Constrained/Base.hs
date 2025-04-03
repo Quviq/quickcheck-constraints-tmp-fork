@@ -104,10 +104,7 @@ type LogicRequires t =
 -- | Logical operations are one that support reasoning about how a function symbol
 --   relates to logical properties, that we call Specification's
 class LogicRequires t => Logic t where
-  {-# MINIMAL (propagate, info) #-}
-
-  -- info :: String -- For documentation about what constructor of 't' implements 's'
-  info :: forall dom rng. t dom rng -> String
+  {-# MINIMAL (propagate) #-}
 
   propagate :: forall dom rng hole. Context t dom rng hole -> Specification rng -> Specification hole
 
@@ -408,8 +405,6 @@ type GenericRequires a =
 -- HasSimpleRep, HasSpec, Syntax, Semantics, and Logic. We call BaseW a 'witness type', and use
 -- the convention that all witness types (and their constructors) have "W" as thrit last character.
 data BaseW (dom :: [Type]) (rng :: Type) where
-  InjLeftW :: forall a b. BaseW '[a] (Sum a b)
-  InjRightW :: forall a b. BaseW '[b] (Sum a b)
   EqualW :: forall a. Eq a => BaseW '[a, a] Bool
   ToGenericW ::
     GenericRequires a => BaseW '[a] (SimpleRep a)
@@ -422,8 +417,6 @@ deriving instance Eq (BaseW dom rng)
 instance Show (BaseW d r) where
   show ToGenericW = "toSimpleRep"
   show FromGenericW = "fromSimpleRep"
-  show InjLeftW = "leftFn"
-  show InjRightW = "rightFn"
   show EqualW = "==."
   show ElemW = "elem_"
 
@@ -438,8 +431,6 @@ instance Syntax BaseW where
 instance Semantics BaseW where
   semantics FromGenericW = fromSimpleRep
   semantics ToGenericW = toSimpleRep
-  semantics InjLeftW = SumLeft
-  semantics InjRightW = SumRight
   semantics EqualW = (==)
   semantics ElemW = elem
 
@@ -458,8 +449,6 @@ instance Logic BaseW where
     constrained $ \v' -> Let (App FromGenericW (v' :> Nil)) (v :-> ps)
   propagate (Context FromGenericW (HOLE :<> End)) (TypeSpec s cant) = TypeSpec s (toSimpleRep <$> cant)
   propagate (Context FromGenericW (HOLE :<> End)) (MemberSpec es) = MemberSpec (fmap toSimpleRep es)
-  propagate ctx _ =
-    ErrorSpec $ pure ("Logic instance for ToGenericFn with wrong number of arguments. " ++ show ctx)
 
   mapTypeSpec ToGenericW ts = typeSpec ts
   mapTypeSpec FromGenericW ts = typeSpec ts
@@ -1123,7 +1112,6 @@ instance HasSpec () where
   cardinalTrueSpec = equalSpec 1 -- there is exactly one, ()
   typeSpecOpt _ [] = TrueSpec
   typeSpecOpt _ (_ : _) = ErrorSpec (pure "Non null 'cant' set in typeSpecOpt @()")
-
 -- ========================================================================
 -- Uni-directional, Match only patterns, for the Function Symbols in BaseW.
 -- The commented out Constructor patterns , work but have such convoluted types,
@@ -1162,8 +1150,6 @@ pattern FromGeneric ::
 pattern FromGeneric x <-
   (App (sameWitness (FromGenericW @()) -> Just (FromGenericW, Refl)) (x :> Nil))
 
--- where FromGeneric x = App FromGenericW (x :> Nil)
-
 pattern ToGeneric ::
   forall rng.
   () =>
@@ -1171,27 +1157,3 @@ pattern ToGeneric ::
   (rng ~ SimpleRep a, GenericRequires a, HasSpec a, AppRequires BaseW '[a] rng) =>
   Term a -> Term rng
 pattern ToGeneric x <- (App (sameWitness (ToGenericW @()) -> Just (ToGenericW, Refl)) (x :> Nil))
-
--- where ToGeneric x = App ToGenericW (x :> Nil)
-
-pattern InjRight ::
-  forall c.
-  () =>
-  forall a b.
-  ( c ~ Sum a b
-  , AppRequires BaseW '[b] c
-  ) =>
-  Term b -> Term c
-pattern InjRight x <- (App (sameWitness (InjRightW @_ @_) -> Just (InjRightW, Refl)) (x :> Nil))
-
--- whereInjRight x = App InjRightW (x :> Nil)
-
-pattern InjLeft ::
-  forall c.
-  () =>
-  forall a b.
-  ( c ~ Sum a b
-  , AppRequires BaseW '[a] c
-  ) =>
-  Term a -> Term c
-pattern InjLeft x <- (App (sameWitness (InjLeftW @() @()) -> Just (InjLeftW, Refl)) (x :> Nil))
