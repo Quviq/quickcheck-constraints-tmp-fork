@@ -60,6 +60,7 @@ module Constrained.Spec.SumProd (
   prodSnd_,
   prod_,
   PairSpec (..),
+  SumW(..)
 ) where
 
 import Constrained.Base
