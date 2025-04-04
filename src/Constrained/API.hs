@@ -135,8 +135,6 @@ module Constrained.API (
   pattern Elem,
   pattern ToGeneric,
   pattern FromGeneric,
-  pattern InjLeft,
-  pattern InjRight,
   printPlan,
   NumLike,
   PairSpec (..),

@@ -1,5 +1,4 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE TypeAbstractions #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DefaultSignatures #-}
@@ -39,7 +38,7 @@ module Constrained.Base where
 
 import Constrained.Generic
 
-import Constrained.Core (Evidence (..), Var (..))
+import Constrained.Core (Evidence (..), Var (..), Value(..), eqVar)
 import Constrained.GenT (
   GE (..),
   GenT,
@@ -106,7 +105,9 @@ type LogicRequires t =
 class LogicRequires t => Logic t where
   {-# MINIMAL (propagate) #-}
 
-  propagate :: forall dom rng hole. Context t dom rng hole -> Specification rng -> Specification hole
+  propagate :: t as b
+            -> ListCtx Value as (HOLE a)
+            -> Specification b -> Specification a
 
   rewriteRules ::
     (TypeList dom, Typeable dom, HasSpec rng, All HasSpec dom) =>
@@ -121,9 +122,6 @@ class LogicRequires t => Logic t where
   saturate :: t dom Bool -> List Term dom -> [Pred]
   saturate _symbol _ = []
 
--- This is where the logical properties of a function symbol are applied to transform one spec into another
--- Note if there is a bunch of functions nested together, like (sizeOf_ (elems_ (snd_ x)))
--- we propagate f over them one at a time. Note the recusive calls to 'propagateSpec'
 propagateSpec ::
   forall v a.
   HasSpec v =>
@@ -131,19 +129,86 @@ propagateSpec ::
   Ctx v a ->
   Specification v
 propagateSpec spec = \case
-  HOLE -> spec
-  Ctx (Context f (x :|> newctx :<> y :<| End)) ->
-    propagateSpec (propagate (Context f (x :|> HOLE :<> y :<| End)) spec) newctx
-  Ctx (Context f clist) -> case clist of
-    (ctx :<> more) -> propagateSpec (propagate (Context f (HOLE :<> more)) spec) ctx
-    (a :|> ctx :<> more) -> propagateSpec (propagate (Context f (a :|> HOLE :<> more)) spec) ctx
-    (a :|> b :|> ctx :<> more) ->
-      propagateSpec (propagate (Context f (a :|> b :|> HOLE :<> more)) spec) ctx
-    (a :|> b :|> c :|> ctx :<> more) ->
-      propagateSpec (propagate (Context f (a :|> b :|> c :|> HOLE :<> more)) spec) ctx
-    (a :|> b :|> c :|> d :|> ctx :<> more) ->
-      propagateSpec (propagate (Context f (a :|> b :|> c :|> d :|> HOLE :<> more)) spec) ctx
-    _ -> ErrorSpec $ pure ("function with more than 5 arguments in propagateSpec: " ++ show f)
+  CtxHOLE -> spec
+  CtxApp f (ListCtx pre c suf)
+    | Evidence <- ctxHasSpec c -> propagateSpec (propagate f (ListCtx pre HOLE suf) spec) c
+
+ctxHasSpec :: Ctx v a -> Evidence (HasSpec a)
+ctxHasSpec CtxHOLE = Evidence
+ctxHasSpec CtxApp {} = Evidence
+
+-- | Contexts for Terms, basically a term with a _single_ HOLE
+-- instead of a variable. This is used to traverse the defining
+-- constraints for a variable and turn them into a spec. Each
+-- subterm `f vs Ctx vs'` for lists of values `vs` and `vs'`
+-- gets given to the `propagateSpecFun` for `f` as
+-- `f vs HOLE vs'`.
+data Ctx v a where
+  -- | A single hole of type `v`
+  CtxHOLE ::
+    HasSpec v =>
+    Ctx v v
+  -- | The application `f vs Ctx vs'`
+  CtxApp ::
+    ( HasSpec b
+    , TypeList as
+    , Typeable as
+    , All HasSpec as
+    , Logic fn
+    ) =>
+    fn as b ->
+    -- This is basically a `List` where
+    -- everything is `Value` except for
+    -- one entry which is `Ctx fn v`.
+    ListCtx Value as (Ctx v) ->
+    Ctx v b
+
+-- | This is used together with `ListCtx` to form
+-- just the arguments to `f vs Ctx vs'` - replacing
+-- `Ctx` with `HOLE` - to provide to `propagateSpecFun`.
+data HOLE a b where
+  HOLE :: HOLE a a
+
+toCtx ::
+  forall m v a.
+  ( Typeable v
+  , MonadGenError m
+  , HasCallStack
+  ) =>
+  Var v ->
+  Term a ->
+  m (Ctx v a)
+toCtx v = go
+  where
+    go :: forall b. Term b -> m (Ctx v b)
+    go (Lit _i) = error "TODO: bring back the old error message"
+    go (App f as) = CtxApp f <$> toCtxList v as
+    go (V v')
+      | Just Refl <- eqVar v v' = pure $ CtxHOLE
+      | otherwise = error "TODO: bring back the old error messagte"
+
+toCtxList ::
+  forall m v as.
+  (Typeable v, MonadGenError m, HasCallStack) =>
+  Var v ->
+  List Term as ->
+  m (ListCtx Value as (Ctx v))
+toCtxList v = prefix
+  where
+    prefix :: forall as'. HasCallStack => List Term as' -> m (ListCtx Value as' (Ctx v))
+    prefix Nil = error "toCtxList without hole"
+    prefix (Lit l :> ts) = do
+      ctx <- prefix ts
+      pure $ Value l :! ctx
+    prefix (t :> ts) = do
+      hole <- toCtx v t
+      suf <- suffix ts
+      pure $ hole :? suf
+
+    suffix :: forall as'. List Term as' -> m (List Value as')
+    suffix Nil = pure Nil
+    suffix (Lit l :> ts) = (Value l :>) <$> suffix ts
+    suffix (_ :> _) = error "toCtxList with too many holes"
 
 -- ========================================================================
 --
@@ -405,11 +470,8 @@ type GenericRequires a =
 -- HasSimpleRep, HasSpec, Syntax, Semantics, and Logic. We call BaseW a 'witness type', and use
 -- the convention that all witness types (and their constructors) have "W" as thrit last character.
 data BaseW (dom :: [Type]) (rng :: Type) where
-  EqualW :: forall a. Eq a => BaseW '[a, a] Bool
-  ToGenericW ::
-    GenericRequires a => BaseW '[a] (SimpleRep a)
-  FromGenericW ::
-    GenericRequires a => BaseW '[SimpleRep a] a
+  ToGenericW :: GenericRequires a => BaseW '[a] (SimpleRep a)
+  FromGenericW :: GenericRequires a => BaseW '[SimpleRep a] a
   ElemW :: forall a. Eq a => BaseW '[a, [a]] Bool
 
 deriving instance Eq (BaseW dom rng)
@@ -417,12 +479,9 @@ deriving instance Eq (BaseW dom rng)
 instance Show (BaseW d r) where
   show ToGenericW = "toSimpleRep"
   show FromGenericW = "fromSimpleRep"
-  show EqualW = "==."
   show ElemW = "elem_"
 
 instance Syntax BaseW where
-  inFix EqualW = True
-  inFix _ = False
   prettyWit ElemW (y :> Lit n :> Nil) prec = Just $ parensIf (prec > 10) $ "elem_" <+> prettyPrec 10 y <+> short n
   prettyWit ToGenericW (x :> Nil) p = Just $ "to" <+> pretty (WithPrec p x)
   prettyWit FromGenericW (x :> Nil) p = Just $ "from" <+> pretty (WithPrec p x)
@@ -431,24 +490,24 @@ instance Syntax BaseW where
 instance Semantics BaseW where
   semantics FromGenericW = fromSimpleRep
   semantics ToGenericW = toSimpleRep
-  semantics EqualW = (==)
   semantics ElemW = elem
 
 -- -- ============== ToGenericW Logic instance
 
 instance Logic BaseW where
-  propagate ctxt (ExplainSpec [] s) = propagate ctxt s
-  propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
-  propagate _ TrueSpec = TrueSpec
-  propagate _ (ErrorSpec msgs) = ErrorSpec msgs
-  propagate (Context ToGenericW (HOLE :<> End)) (SuspendedSpec v ps) =
-    constrained $ \v' -> Let (App ToGenericW (v' :> Nil)) (v :-> ps)
-  propagate (Context ToGenericW (HOLE :<> End)) (TypeSpec s cant) = TypeSpec s (fromSimpleRep <$> cant)
-  propagate (Context ToGenericW (HOLE :<> End)) (MemberSpec es) = MemberSpec (fmap fromSimpleRep es)
-  propagate (Context FromGenericW (HOLE :<> End)) (SuspendedSpec v ps) =
-    constrained $ \v' -> Let (App FromGenericW (v' :> Nil)) (v :-> ps)
-  propagate (Context FromGenericW (HOLE :<> End)) (TypeSpec s cant) = TypeSpec s (toSimpleRep <$> cant)
-  propagate (Context FromGenericW (HOLE :<> End)) (MemberSpec es) = MemberSpec (fmap toSimpleRep es)
+  propagate f ctxt (ExplainSpec [] s) = propagate f ctxt s
+  propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
+  propagate _ _ TrueSpec = TrueSpec
+  propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
+  -- propagate ToGenericW (HOLE :<> End) (SuspendedSpec v ps) =
+  --   constrained $ \v' -> Let (App ToGenericW (v' :> Nil)) (v :-> ps)
+  -- propagate (Context ToGenericW (HOLE :<> End)) (TypeSpec s cant) = TypeSpec s (fromSimpleRep <$> cant)
+  -- propagate (Context ToGenericW (HOLE :<> End)) (MemberSpec es) = MemberSpec (fmap fromSimpleRep es)
+  -- propagate (Context FromGenericW (HOLE :<> End)) (SuspendedSpec v ps) =
+  --   constrained $ \v' -> Let (App FromGenericW (v' :> Nil)) (v :-> ps)
+  -- propagate (Context FromGenericW (HOLE :<> End)) (TypeSpec s cant) = TypeSpec s (toSimpleRep <$> cant)
+  -- propagate (Context FromGenericW (HOLE :<> End)) (MemberSpec es) = MemberSpec (fmap toSimpleRep es)
+  propagate _ _ _ = error "TODO"
 
   mapTypeSpec ToGenericW ts = typeSpec ts
   mapTypeSpec FromGenericW ts = typeSpec ts
@@ -1001,63 +1060,6 @@ instance HasSpec a => Pretty (Specification a) where
 instance HasSpec a => Show (Specification a) where
   showsPrec d = shows . pretty . WithPrec d
 
--- ==========================================================
--- Contexts
--- ==========================================================
-
-data
-  Context
-    (t :: FSType)
-    (dom :: [Type])
-    rng
-    hole
-  where
-  Context ::
-    (All HasSpec dom, HasSpec rng) =>
-    t dom rng -> CList 'Pre dom hole y -> Context t dom rng hole
-
-data Ctx hole rng where
-  Ctx ::
-    (Show (t dom rng), HasSpec hole, HasSpec rng, Logic t) => Context t dom rng hole -> Ctx hole rng
-  HOLE :: HasSpec a => Ctx a a
-
-data Mode = Pre | Post
-
-infixr 5 :<|
-infixr 5 :|>
-infixr 5 :<>
-
-data CList (x :: Mode) (as :: [Type]) (hole :: Type) (y :: Type) where
-  End :: CList 'Post '[] h y
-  (:<|) :: Literal a => a -> CList 'Post as h y -> CList 'Post (a ': as) h y
-  (:<>) :: HasSpec y => Ctx x y -> (forall i j. CList 'Post as i j) -> CList 'Pre (y ': as) x y
-  (:|>) :: Literal a => a -> CList 'Pre as h y -> CList 'Pre (a ': as) h y
-
-instance Show (CList mode as hole y) where
-  show clist = "(" ++ showCList clist
-    where
-      showCList :: forall m ds h z. CList m ds h z -> String
-      showCList End = "End)"
-      showCList (x :<| y) = show x ++ " :<| " ++ showCList y
-      showCList (hole :<> xs) = show hole ++ " :<> " ++ showCList xs
-      showCList (x :|> y) = show x ++ " :|> " ++ showCList y
-
--- Examples
-c6 :: HasSpec b => CList 'Pre [Bool, String, b, Bool, ()] b b
-c6 = True :|> ("abc" :: String) :|> HOLE :<> True :<| () :<| End
-
-val6 :: List [] [Bool, String, Int, Bool, ()]
-val6 = [] :> ["abc"] :> [67, 12] :> [True, False] :> [()] :> Nil
-
--- Show instances
-
-instance Show (Ctx rng hole) where
-  show (Ctx context) = show context
-  show HOLE = "[_ " ++ showType @hole ++ " _]"
-
-instance Show (t d r) => Show (Context t d r h) where
-  show (Context f xs) = "(Context " ++ show f ++ " " ++ show xs ++ ")"
-
 -- ====================================================
 -- The Fun type encapuslates a Logic instance to hide
 -- everything but the domain and range. This is a way
@@ -1116,18 +1118,6 @@ instance HasSpec () where
 -- Uni-directional, Match only patterns, for the Function Symbols in BaseW.
 -- The commented out Constructor patterns , work but have such convoluted types,
 -- that without a monomorphic typing, are basically useless. Use the xxx_ functions instead.
-
-pattern Equal ::
-  forall b.
-  () =>
-  forall a.
-  (b ~ Bool, Eq a, HasSpec a) =>
-  Term a -> Term a -> Term b
-pattern Equal x y <-
-  ( App
-      (sameWitness (EqualW @Int) -> Just (EqualW, Refl))
-      (x :> y :> Nil)
-    )
 
 pattern Elem ::
   forall b.

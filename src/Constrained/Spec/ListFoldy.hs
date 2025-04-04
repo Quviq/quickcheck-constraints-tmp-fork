@@ -36,7 +36,7 @@ module Constrained.Spec.ListFoldy where
 
 import Constrained.Base
 import Constrained.Conformance (conformsToSpec, satisfies)
-import Constrained.Core (Evidence (..), NonEmpty ((:|)), Var (..), eqVar, unionWithMaybe)
+import Constrained.Core
 import Constrained.GenT
 import Constrained.List
 import Constrained.NumSpec
@@ -134,15 +134,15 @@ compareWit x y = case (eqT @t1 @t2, eqT @bs1 @bs2, eqT @r1 @r2) of
 -- Also their Haskell implementations id_ flip_ composeFn
 
 instance Logic FunW where
-  propagate ctxt (ExplainSpec [] s) = propagate ctxt s
-  propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
-  propagate _ (ErrorSpec msgs) = ErrorSpec msgs
-  propagate (Context IdW (HOLE :<> End)) spec = spec
-  propagate (Context (FlipW f) (HOLE :<> v :<| End)) spec = propagate (Context f (v :|> HOLE :<> End)) spec
-  propagate (Context (FlipW f) (v :|> HOLE :<> End)) spec = propagate (Context f (HOLE :<> v :<| End)) spec
-  propagate (Context (ComposeW (f :: t1' '[b'] r') (g :: t2' '[a'] b'')) (HOLE :<> End)) spec =
-    propagate (Context g (HOLE :<> End)) $ propagate (Context f (HOLE :<> End)) spec
-  propagate _ _ = error "TODO"
+  propagate f ctxt (ExplainSpec [] s) = propagate f ctxt s
+  propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
+  propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
+  -- propagate (Context IdW (HOLE :<> End)) spec = spec
+  -- propagate (Context (FlipW f) (HOLE :<> v :<| End)) spec = propagate (Context f (v :|> HOLE :<> End)) spec
+  -- propagate (Context (FlipW f) (v :|> HOLE :<> End)) spec = propagate (Context f (HOLE :<> v :<| End)) spec
+  -- propagate (Context (ComposeW (f :: t1' '[b'] r') (g :: t2' '[a'] b'')) (HOLE :<> End)) spec =
+  --   propagate (Context g (HOLE :<> End)) $ propagate (Context f (HOLE :<> End)) spec
+  propagate _ _ _ = error "TODO"
 
   mapTypeSpec IdW ts = typeSpec ts
   mapTypeSpec (ComposeW g h) ts = mapSpec g . mapSpec h $ typeSpec ts
@@ -273,7 +273,7 @@ genInverse ::
   b ->
   GenT m a
 genInverse (Fun f) argS x =
-  let argSpec' = argS <> propagate (Context f (HOLE :<> End)) (equalSpec x)
+  let argSpec' = argS <> propagate f (HOLE :? Nil) (equalSpec x)
    in explain
         ( NE.fromList
             [ "genInverse"
@@ -320,9 +320,9 @@ genFromFold must (simplifySpec -> size) elemS fun@(Fun fn) foldS
             elemS' = mapSpec fn elemS
             mustVal = adds (map (semantics fn) must)
             foldS' :: Specification b
-            foldS' = propagate (Context theAddFn (HOLE :<> mustVal :<| End)) foldS
+            foldS' = propagate theAddFn (HOLE :? Value mustVal :> Nil) foldS
             sizeSpec' :: Specification Integer
-            sizeSpec' = propagate (Context AddW (HOLE :<> (sizeOf must) :<| End)) size
+            sizeSpec' = propagate AddW (HOLE :? Value (sizeOf must) :> Nil) size
         when (isErrorLike sizeSpec') $ genError1 "Inconsistent size spec"
         results0 <- case sizeSpec' of
           TrueSpec -> genList (simplifySpec elemS') (simplifySpec foldS')
@@ -404,18 +404,18 @@ deriving instance (Eq (ListW d r))
 
 -- ============= Logicbol for FoldMapW
 instance Logic ListW where
-  propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
-  propagate _ TrueSpec = TrueSpec
-  propagate _ (ErrorSpec msgs) = ErrorSpec msgs
-  propagate (Context (FoldMapW f) (HOLE :<> End)) (SuspendedSpec v ps) =
-    constrained $ \v' -> Let (App (FoldMapW f) (v' :> Nil)) (v :-> ps)
-  propagate (Context (FoldMapW f) (HOLE :<> End)) (TypeSpec ts cant) =
-    typeSpec (ListSpec Nothing [] TrueSpec TrueSpec $ FoldSpec f (TypeSpec ts cant))
-  propagate (Context (FoldMapW f) (HOLE :<> End)) (MemberSpec es) =
-    typeSpec (ListSpec Nothing [] TrueSpec TrueSpec $ FoldSpec f (MemberSpec es))
-  propagate ctx _ =
-    ErrorSpec $ pure ("Logic instance for FoldMapW with wrong number of arguments. " ++ show ctx)
+  propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
+  propagate _ _ TrueSpec = TrueSpec
+  propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
+  -- propagate (Context (FoldMapW f) (HOLE :<> End)) (SuspendedSpec v ps) =
+  --   constrained $ \v' -> Let (App (FoldMapW f) (v' :> Nil)) (v :-> ps)
+  -- propagate (Context (FoldMapW f) (HOLE :<> End)) (TypeSpec ts cant) =
+  --   typeSpec (ListSpec Nothing [] TrueSpec TrueSpec $ FoldSpec f (TypeSpec ts cant))
+  -- propagate (Context (FoldMapW f) (HOLE :<> End)) (MemberSpec es) =
+  --   typeSpec (ListSpec Nothing [] TrueSpec TrueSpec $ FoldSpec f (MemberSpec es))
+  propagate _ _ _ = error "TODO"
 
+  mapTypeSpec SingletonListW ts = typeSpec (ListSpec Nothing [] (equalSpec 1) (typeSpec ts) NoFold)
   mapTypeSpec (FoldMapW g) ts =
     constrained $ \x ->
       unsafeExists $ \x' ->
@@ -527,12 +527,11 @@ elemFn = Fun ElemW
 --     ErrorSpec $ pure ("Logic instance for SingletonListW with wrong number of arguments. " ++ show ctx)
 
 --   -- NOTE: this function over-approximates and returns a liberal spec.
---   mapTypeSpec SingletonListW ts = typeSpec (ListSpec Nothing [] (equalSpec 1) (typeSpec ts) NoFold)
 
 reverseFoldSpec :: FoldSpec a -> Specification a
 reverseFoldSpec NoFold = TrueSpec
 -- The single element list has to sum to something that obeys spec, i.e. `conformsToSpec (f a) spec`
-reverseFoldSpec (FoldSpec (Fun fn) spec) = propagate (Context fn (HOLE :<> End)) spec
+reverseFoldSpec (FoldSpec (Fun fn) spec) = propagate fn (HOLE :? Nil) spec
 
 singletonList_ :: (Sized [a], HasSpec a) => Term a -> Term [a]
 singletonList_ = appTerm SingletonListW
@@ -934,7 +933,7 @@ genNumList elemSIn foldSIn = do
               $ do
                 sz <- sizeT
                 x <- genFromSpecT elemS
-                let foldS' = propagate (Context theAddFn (HOLE :<> x :<| End)) foldS
+                let foldS' = propagate theAddFn (HOLE :? Value x :> Nil) foldS
                     specs' = narrowByFuelAndSize (fromIntegral $ fuel - 1) sz (elemS, foldS')
                 pure (x, specs')
                 `suchThatT` not

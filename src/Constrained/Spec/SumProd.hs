@@ -91,6 +91,8 @@ instance Show (SumW dom rng) where
   show InjLeftW = "injLeft"
   show InjRightW = "injRight"
 
+instance Syntax SumW
+
 instance Semantics SumW where
   semantics InjLeftW = SumLeft
   semantics InjRightW = SumRight

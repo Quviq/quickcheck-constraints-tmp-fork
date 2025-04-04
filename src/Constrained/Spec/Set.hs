@@ -38,21 +38,20 @@ import Constrained.List
 import Constrained.NumSpec
 import Constrained.Spec.ListFoldy (
   FoldSpec (..),
-  ListSpec (..),
-  elem_,
+  -- ListSpec (..),
+  -- elem_,
   knownUpperBound,
   maxFromSpec,
  )
 import Constrained.Spec.Size (Sized (..), maxSpec, sizeOf_)
-import Constrained.Syntax (exists, forAll, unsafeExists)
-import Constrained.TheKnot (caseBoolSpec, genFromSpecT, not_, shrinkWithSpec, simplifySpec, (==.))
+import Constrained.Syntax (forAll, unsafeExists)
+import Constrained.TheKnot (genFromSpecT, shrinkWithSpec, simplifySpec, (==.))
 import Data.Foldable
 import Data.Kind
 import Data.List ((\\))
 import qualified Data.List.NonEmpty as NE
 import Data.Set (Set)
 import qualified Data.Set as Set
-import GHC.TypeLits
 import Prettyprinter hiding (cat)
 import Test.QuickCheck (Arbitrary (..), shrinkList, shuffle)
 
@@ -274,34 +273,40 @@ instance (Ord a, HasSpec a, HasSpec (Set a)) => Monoid (Term (Set a)) where
 singletons :: [Set a] -> [Set a] -- Every Set in the filterd output has size 1 (if there are any)
 singletons = filter ((1 ==) . Set.size)
 
-instance Logic SetW
--- instance (HasSpec a, Ord a) => Logic SetW where
---   propagate ctxt (ExplainSpec [] s) = propagate ctxt s
---   propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
---   propagate _ TrueSpec = TrueSpec
---   propagate _ (ErrorSpec msgs) = ErrorSpec msgs
---   propagate (Context SingletonW (HOLE :<> End)) (SuspendedSpec v ps) =
---     constrained $ \v' -> Let (App SingletonW (v' :> Nil)) (v :-> ps)
---   propagate (Context SingletonW (HOLE :<> End)) (TypeSpec (SetSpec must es size) cant)
---     | not $ 1 `conformsToSpec` size =
---         ErrorSpec (pure "propagateSpecFun Singleton with spec that doesn't accept 1 size set")
---     | [a] <- Set.toList must
---     , a `conformsToSpec` es
---     , Set.singleton a `notElem` cant =
---         equalSpec a
---     | null must = es <> notMemberSpec (Set.toList $ fold $ singletons cant)
---     | otherwise = ErrorSpec (pure "propagateSpecFun Singleton with `must` of size > 1")
---   propagate (Context SingletonW (HOLE :<> End)) (MemberSpec es) =
---     case Set.toList $ fold $ singletons (NE.toList es) of
---       [] -> ErrorSpec $ pure "In propagateSpecFun Singleton, the sets of size 1, in MemberSpec is empty"
---       (x : xs) -> MemberSpec (x :| xs)
---   propagate ctx _ =
---     ErrorSpec $ pure ("Logic instance for SingletonW with wrong number of arguments. " ++ show ctx)
+instance Logic SetW where
+  propagate f ctxt (ExplainSpec [] s) = propagate f ctxt s
+  propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
+  propagate _ _ TrueSpec = TrueSpec
+  propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
+  -- propagate (Context SingletonW (HOLE :<> End)) (SuspendedSpec v ps) =
+  --   constrained $ \v' -> Let (App SingletonW (v' :> Nil)) (v :-> ps)
+  -- propagate (Context SingletonW (HOLE :<> End)) (TypeSpec (SetSpec must es size) cant)
+  --   | not $ 1 `conformsToSpec` size =
+  --       ErrorSpec (pure "propagateSpecFun Singleton with spec that doesn't accept 1 size set")
+  --   | [a] <- Set.toList must
+  --   , a `conformsToSpec` es
+  --   , Set.singleton a `notElem` cant =
+  --       equalSpec a
+  --   | null must = es <> notMemberSpec (Set.toList $ fold $ singletons cant)
+  --   | otherwise = ErrorSpec (pure "propagateSpecFun Singleton with `must` of size > 1")
+  -- propagate (Context SingletonW (HOLE :<> End)) (MemberSpec es) =
+  --   case Set.toList $ fold $ singletons (NE.toList es) of
+  --     [] -> ErrorSpec $ pure "In propagateSpecFun Singleton, the sets of size 1, in MemberSpec is empty"
+  --     (x : xs) -> MemberSpec (x :| xs)
+  propagate _ _ _ = error "TODO"
 
---   mapTypeSpec SingletonW ts =
---     constrained $ \x ->
---       unsafeExists $ \x' ->
---         Assert (x ==. singleton_ x') <> toPreds x' ts
+
+  mapTypeSpec FromListW ts =
+    constrained $ \x ->
+      unsafeExists $ \x' -> Assert (x ==. fromList_ x') <> toPreds x' ts
+  mapTypeSpec SingletonW ts =
+    constrained $ \x ->
+      unsafeExists $ \x' ->
+        Assert (x ==. singleton_ x') <> toPreds x' ts
+
+  rewriteRules SubsetW (Lit s :> _ :> Nil) Evidence | null s = Just $ Lit True
+  rewriteRules SubsetW (x :> Lit s :> Nil) Evidence | null s = Just $ x ==. Lit Set.empty
+  rewriteRules _ _ _ = Nothing
 
 singleton_ :: (Ord a, HasSpec a) => Term a -> Term (Set a)
 singleton_ = appTerm SingletonW
@@ -339,10 +344,6 @@ singleton_ = appTerm SingletonW
 --             , Assert $ not_ $ member_ e set
 --             ]
 --   propagate ctx _ = ErrorSpec $ pure ("Logic instance for SubsetW with wrong number of arguments. " ++ show ctx)
-
---   rewriteRules SubsetW (Lit s :> _ :> Nil) Evidence | null s = Just $ Lit True
---   rewriteRules SubsetW (x :> Lit s :> Nil) Evidence | null s = Just $ x ==. Lit Set.empty
---   rewriteRules _ _ _ = Nothing
 
 subset_ :: (Ord a, HasSpec a) => Term (Set a) -> Term (Set a) -> Term Bool
 subset_ = appTerm SubsetW

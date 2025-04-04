@@ -28,12 +28,10 @@ import Constrained.Base
 import Constrained.Conformance (satisfies)
 import Constrained.GenT
 import Constrained.Generic
-import Constrained.List
 import Constrained.NumSpec
 import Constrained.Syntax
 import Constrained.TheKnot (genFromSpecT, (<=.), (==.))
 import Data.Kind
-import qualified Data.List.NonEmpty as NE
 
 -- ======================================================================
 -- Size and its 'generic' operations over Sized types.
@@ -58,18 +56,19 @@ instance Semantics SizeW where
 instance Syntax SizeW
 
 instance Logic SizeW where
-  propagate ctxt (ExplainSpec [] s) = propagate ctxt s
-  propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
-  propagate _ TrueSpec = TrueSpec
-  propagate _ (ErrorSpec msgs) = ErrorSpec msgs
-  propagate (Context SizeOfW (HOLE :<> End)) (SuspendedSpec v ps) =
-    constrained $ \v' -> Let (App SizeOfW (v' :> Nil)) (v :-> ps)
-  propagate (Context SizeOfW (HOLE :<> End)) (TypeSpec ts cant) =
-    liftSizeSpec ts cant
-  propagate (Context SizeOfW (HOLE :<> End)) (MemberSpec es) =
-    liftMemberSpec (NE.toList es)
-  propagate ctx _ =
-    ErrorSpec $ pure ("Logic instance for SizeOfW with wrong number of arguments. " ++ show ctx)
+  propagate f ctxt (ExplainSpec [] s) = propagate f ctxt s
+  propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
+  propagate _ _ TrueSpec = TrueSpec
+  propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
+  -- propagate (Context SizeOfW (HOLE :<> End)) (SuspendedSpec v ps) =
+  --   constrained $ \v' -> Let (App SizeOfW (v' :> Nil)) (v :-> ps)
+  -- propagate (Context SizeOfW (HOLE :<> End)) (TypeSpec ts cant) =
+  --   liftSizeSpec ts cant
+  -- propagate (Context SizeOfW (HOLE :<> End)) (MemberSpec es) =
+  --   liftMemberSpec (NE.toList es)
+  -- propagate ctx _ =
+  --   ErrorSpec $ pure ("Logic instance for SizeOfW with wrong number of arguments. " ++ show ctx)
+  propagate _ _ _ = error "TODO"
 
   mapTypeSpec (SizeOfW :: SizeW '[a] b) ts =
     constrained $ \x ->
