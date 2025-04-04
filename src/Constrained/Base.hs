@@ -562,7 +562,6 @@ toSimpleRepSpec ::
   ( HasSpec (SimpleRep a)
   , HasSimpleRep a
   , TypeSpec a ~ TypeSpec (SimpleRep a)
-  , Logic BaseW
   ) =>
   Specification a ->
   Specification (SimpleRep a)

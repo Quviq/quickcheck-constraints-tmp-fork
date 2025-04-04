@@ -31,6 +31,9 @@ import Constrained.Generic
 import Constrained.NumSpec
 import Constrained.Syntax
 import Constrained.TheKnot (genFromSpecT, (<=.), (==.))
+import Constrained.List
+import Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as NE
 import Data.Kind
 
 -- ======================================================================
@@ -43,7 +46,7 @@ genFromSizeSpec :: MonadGenError m => Specification Integer -> GenT m Integer
 genFromSizeSpec integerSpec = genFromSpecT (integerSpec <> geqSpec 0)
 
 data SizeW (dom :: [Type]) rng :: Type where
-  SizeOfW :: forall n. Sized n => SizeW '[n] Integer
+  SizeOfW :: (Sized n, HasSpec n) => SizeW '[n] Integer
 
 deriving instance Eq (SizeW ds r)
 
@@ -60,15 +63,9 @@ instance Logic SizeW where
   propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
   propagate _ _ TrueSpec = TrueSpec
   propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
-  -- propagate (Context SizeOfW (HOLE :<> End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App SizeOfW (v' :> Nil)) (v :-> ps)
-  -- propagate (Context SizeOfW (HOLE :<> End)) (TypeSpec ts cant) =
-  --   liftSizeSpec ts cant
-  -- propagate (Context SizeOfW (HOLE :<> End)) (MemberSpec es) =
-  --   liftMemberSpec (NE.toList es)
-  -- propagate ctx _ =
-  --   ErrorSpec $ pure ("Logic instance for SizeOfW with wrong number of arguments. " ++ show ctx)
-  propagate _ _ _ = error "TODO"
+  propagate SizeOfW (NilCtx HOLE) (SuspendedSpec v ps) = constrained $ \v' -> Let (App SizeOfW (v' :> Nil)) (v :-> ps)
+  propagate SizeOfW (NilCtx HOLE) (TypeSpec ts cant) = liftSizeSpec ts cant
+  propagate SizeOfW (NilCtx HOLE) (MemberSpec es) = liftMemberSpec (NE.toList es)
 
   mapTypeSpec (SizeOfW :: SizeW '[a] b) ts =
     constrained $ \x ->
