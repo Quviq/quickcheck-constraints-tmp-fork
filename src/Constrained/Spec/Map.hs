@@ -27,7 +27,7 @@ module Constrained.Spec.Map where
 
 import Constrained.Base
 import Constrained.Conformance
-import Constrained.Core (Evidence (..), NonEmpty ((:|)), unionWithMaybe)
+import Constrained.Core
 import Constrained.GenT
 import Constrained.Generic (Prod (..))
 import Constrained.List
@@ -45,7 +45,7 @@ import Constrained.Spec.ListFoldy (
 import Constrained.Spec.Set
 import Constrained.Spec.Size (Sized (..), maxSpec, sizeOf_)
 import Constrained.Spec.SumProd
-import Constrained.Syntax (forAll, genHint, letBind, unsafeExists)
+import Constrained.Syntax
 import Constrained.TheKnot
 import Control.Monad
 import Data.Foldable
@@ -57,7 +57,6 @@ import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import GHC.Generics
-import GHC.TypeLits
 import Prettyprinter
 import Test.QuickCheck hiding (Fun, Witness, forAll)
 
@@ -256,7 +255,7 @@ instance
             )
         !foldSpec' = case foldSpec of
           NoFold -> NoFold
-          FoldSpec fn@(Fun symbol) sumSpec -> FoldSpec fn $ propagate (Context theAddFn (HOLE :<> mustSum :<| End)) sumSpec
+          FoldSpec fn@(Fun symbol) sumSpec -> FoldSpec fn $ propagate theAddFn (HOLE :? Value mustSum :> Nil) sumSpec
             where
               mustSum = adds (map (semantics symbol) haveVals)
     let !valsSpec =
@@ -320,9 +319,9 @@ instance
 ------------------------------------------------------------------------
 
 data MapW (dom :: [Type]) (rng :: Type) where
-  DomW :: forall k v. Ord k => MapW '[Map k v] (Set k)
-  RngW :: forall k v. Ord k => MapW '[Map k v] [v]
-  LookupW :: forall k v. Ord k => MapW '[k, Map k v] (Maybe v)
+  DomW :: (HasSpec k, HasSpec v, IsNormalType k, IsNormalType v, Ord k) => MapW '[Map k v] (Set k)
+  RngW :: (HasSpec k, HasSpec v, IsNormalType k, IsNormalType v, Ord k) => MapW '[Map k v] [v]
+  LookupW :: (HasSpec k, HasSpec v, IsNormalType k, IsNormalType v, Ord k) => MapW '[k, Map k v] (Maybe v)
 
 deriving instance Eq (MapW dom rng)
 
@@ -343,120 +342,80 @@ instance Show (MapW d r) where
 
 -- ============ DomW
 
-instance Logic MapW
+instance Logic MapW where
+  propagate f ctxt (ExplainSpec es s) = explainSpec es $ propagate f ctxt s
+  propagate _ _ TrueSpec = TrueSpec
+  propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
+  propagate DomW (NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App DomW (v' :> Nil)) (v :-> ps)
+  propagate DomW (NilCtx HOLE) spec =
+    case spec of
+      MemberSpec (s :| []) ->
+        typeSpec $
+          MapSpec Nothing s [] (equalSpec $ sizeOf s) TrueSpec NoFold
+      TypeSpec (SetSpec must elemspec size) [] ->
+        typeSpec $
+          MapSpec
+            Nothing
+            must
+            []
+            size
+            (constrained $ \kv -> satisfies (fst_ kv) elemspec)
+            NoFold
+      _ -> ErrorSpec (NE.fromList ["Dom on bad map spec", show spec])
+  propagate RngW (NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App RngW (v' :> Nil)) (v :-> ps)
+  propagate RngW (NilCtx HOLE) spec =
+    case spec of
+      TypeSpec (ListSpec listHint must size elemspec foldspec) [] ->
+        typeSpec $
+          MapSpec
+            listHint
+            Set.empty
+            must
+            size
+            (constrained $ \kv -> satisfies (snd_ kv) elemspec)
+            foldspec
+      -- NOTE: you'd think `MemberSpec [r]` was a safe and easy case. However, that
+      -- requires not only that the elements of the map are fixed to what is in `r`,
+      -- but they appear in the order that they are in `r`. That's
+      -- very difficult to achieve!
+      _ -> ErrorSpec (NE.fromList ["Rng on bad map spec", show spec])
+  propagate LookupW (HOLE :? Value x :> Nil) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App LookupW (v' :> Lit x :> Nil)) (v :-> ps)
+  propagate LookupW (Value x :! NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App LookupW (Lit x :> v' :> Nil)) (v :-> ps)
+  propagate LookupW (Value k :! NilCtx HOLE) spec =
+        constrained $ \m ->
+          [Assert $ Lit k `member_` dom_ m | not $ Nothing `conformsToSpec` spec]
+            ++ [ forAll m $ \kv ->
+                  letBind (fst_ kv) $ \k' ->
+                    letBind (snd_ kv) $ \v ->
+                      whenTrue (Lit k ==. k') $
+                        -- TODO: What you want to write is `cJust_ v `satisfies` spec` but we can't
+                        -- do that because we don't have access to `IsNormalType v` here. When
+                        -- we refactor the `IsNormalType` machinery we will be able to make
+                        -- this nicer.
+                        case spec of
+                          MemberSpec as -> Assert $ v `elem_` Lit [a | Just a <- NE.toList as]
+                          TypeSpec (SumSpec _ _ vspec) cant ->
+                            v `satisfies` (vspec <> notMemberSpec [a | Just a <- cant])
+               ]
+  propagate LookupW (HOLE :? Value m :> Nil) spec =
+    if Nothing `conformsToSpec` spec
+      then notMemberSpec [k | (k, v) <- Map.toList m, not $ Just v `conformsToSpec` spec]
+      else
+        memberSpecList
+          (Map.keys $ Map.filter ((`conformsToSpec` spec) . Just) m)
+          ( NE.fromList
+              [ "propagate (lookup HOLE ms) on (MemberSpec ms)"
+              , "forall pairs (d,r) in ms, no 'd' conforms to spec"
+              , "  " ++ show spec
+              ]
+          )
 
--- instance
---   (HasSpec k, HasSpec v, Ord k, IsNormalType v, IsNormalType k) =>
---   Logic MapW
---   where
---   propagate ctxt (ExplainSpec [] s) = propagate ctxt s
---   propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
---   propagate _ TrueSpec = TrueSpec
---   propagate _ (ErrorSpec msgs) = ErrorSpec msgs
---   propagate (Context DomW (HOLE :<> End)) (SuspendedSpec v ps) =
---     constrained $ \v' -> Let (App DomW (v' :> Nil)) (v :-> ps)
---   propagate (Context DomW (HOLE :<> End)) spec =
---     case spec of
---       MemberSpec (s :| []) ->
---         typeSpec $
---           MapSpec Nothing s [] (equalSpec $ sizeOf s) TrueSpec NoFold
---       TypeSpec (SetSpec must elemspec size) [] ->
---         typeSpec $
---           MapSpec
---             Nothing
---             must
---             []
---             size
---             (constrained $ \kv -> satisfies (fst_ kv) elemspec)
---             NoFold
---       _ -> ErrorSpec (NE.fromList ["Dom on bad map spec", show spec])
---   propagate ctx _ =
---     ErrorSpec $ pure ("Logic instance for DomW with wrong number of arguments. " ++ show ctx)
-
-  -- mapTypeSpec DomW (MapSpec _ mustSet _ sz kvSpec _)
-  --   | Evidence <- prerequisites @(Map k v) = typeSpec $ SetSpec mustSet (fstSpec @k @v kvSpec) sz
-
--- ============ RngW
-
--- instance
---   (HasSpec k, HasSpec v, Ord k, IsNormalType v, IsNormalType k) =>
---   Logic "rng_" MapW '[Map k v] [v]
---   where
---   propagate ctxt (ExplainSpec [] s) = propagate ctxt s
---   propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
---   propagate _ TrueSpec = TrueSpec
---   propagate _ (ErrorSpec msgs) = ErrorSpec msgs
---   propagate (Context RngW (HOLE :<> End)) (SuspendedSpec v ps) =
---     constrained $ \v' -> Let (App RngW (v' :> Nil)) (v :-> ps)
---   propagate (Context RngW (HOLE :<> End)) spec
---     | Evidence <- prerequisites @(Map k v) =
---         case spec of
---           TypeSpec (ListSpec listHint must size elemspec foldspec) [] ->
---             typeSpec $
---               MapSpec
---                 listHint
---                 Set.empty
---                 must
---                 size
---                 (constrained $ \kv -> satisfies (snd_ kv) elemspec)
---                 foldspec
---           -- NOTE: you'd think `MemberSpec [r]` was a safe and easy case. However, that
---           -- requires not only that the elements of the map are fixed to what is in `r`,
---           -- but they appear in the order that they are in `r`. That's
---           -- very difficult to achieve!
---           _ -> ErrorSpec (NE.fromList ["Rng on bad map spec", show spec])
---   propagate ctx _ =
---     ErrorSpec $ pure ("Logic instance for RngW with wrong number of arguments. " ++ show ctx)
-
---   mapTypeSpec RngW (MapSpec _ _ mustList sz kvSpec foldSpec)
---     | Evidence <- prerequisites @(Map k v) =
---         typeSpec $ (ListSpec Nothing mustList sz (sndSpec @k @v kvSpec) foldSpec)
-
--- ============ LookupW
-
--- instance
---   (HasSpec k, HasSpec v, IsNormalType v, IsNormalType k) =>
---   Logic "lookup_" MapW '[k, Map k v] (Maybe v)
---   where
---   propagate ctxt (ExplainSpec [] s) = propagate ctxt s
---   propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
---   propagate _ TrueSpec = TrueSpec
---   propagate _ (ErrorSpec msgs) = ErrorSpec msgs
---   propagate (Context LookupW (HOLE :<> x :<| End)) (SuspendedSpec v ps) =
---     constrained $ \v' -> Let (App LookupW (v' :> Lit x :> Nil)) (v :-> ps)
---   propagate (Context LookupW (x :|> HOLE :<> End)) (SuspendedSpec v ps) =
---     constrained $ \v' -> Let (App LookupW (Lit x :> v' :> Nil)) (v :-> ps)
---   propagate (Context LookupW (k :|> HOLE :<> End)) spec
---     | Evidence <- prerequisites @(Map k v) =
---         constrained $ \m ->
---           [Assert $ Lit k `member_` dom_ m | not $ Nothing `conformsToSpec` spec]
---             ++ [ forAll m $ \kv ->
---                   letBind (fst_ kv) $ \k' ->
---                     letBind (snd_ kv) $ \v ->
---                       whenTrue (Lit k ==. k') $
---                         -- TODO: What you want to write is `cJust_ v `satisfies` spec` but we can't
---                         -- do that because we don't have access to `IsNormalType v` here. When
---                         -- we refactor the `IsNormalType` machinery we will be able to make
---                         -- this nicer.
---                         case spec of
---                           MemberSpec as -> Assert $ v `elem_` Lit [a | Just a <- NE.toList as]
---                           TypeSpec (SumSpec _ _ vspec) cant ->
---                             v `satisfies` (vspec <> notMemberSpec [a | Just a <- cant])
---                ]
---   propagate (Context LookupW (HOLE :<> m :<| End)) spec =
---     if Nothing `conformsToSpec` spec
---       then notMemberSpec [k | (k, v) <- Map.toList m, not $ Just v `conformsToSpec` spec]
---       else
---         memberSpecList
---           (Map.keys $ Map.filter ((`conformsToSpec` spec) . Just) m)
---           ( NE.fromList
---               [ "propagate (lookup HOLE ms) on (MemberSpec ms)"
---               , "forall pairs (d,r) in ms, no 'd' conforms to spec"
---               , "  " ++ show spec
---               ]
---           )
---   propagate ctx _ =
---     ErrorSpec $ pure ("Logic instance for LookupW with wrong number of arguments. " ++ show ctx)
+  mapTypeSpec DomW (MapSpec _ mustSet _ sz kvSpec _) = typeSpec $ SetSpec mustSet (fstSpec kvSpec) sz
+  mapTypeSpec RngW (MapSpec _ _ mustList sz kvSpec foldSpec) = typeSpec $ (ListSpec Nothing mustList sz (sndSpec kvSpec) foldSpec)
 
 ------------------------------------------------------------------------
 -- Syntax

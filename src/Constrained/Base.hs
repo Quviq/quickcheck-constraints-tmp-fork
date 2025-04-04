@@ -860,6 +860,10 @@ memberSpecList xs messages =
     Nothing -> ErrorSpec messages
     Just ys -> MemberSpec ys
 
+explainSpec :: [String] -> Specification a -> Specification a
+explainSpec [] x = x
+explainSpec es spec = ExplainSpec es spec
+
 explainSpecOpt :: [String] -> Specification a -> Specification a
 explainSpecOpt [] x = x
 explainSpecOpt es1 (ExplainSpec es2 x) = explainSpecOpt (es1 ++ es2) x

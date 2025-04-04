@@ -9,14 +9,6 @@ module Constrained.API (
   Semantics (..),
   Syntax (..),
   Foldy (..),
-  BaseW (ToGenericW, FromGenericW, EqualW, InjLeftW, InjRightW, ElemW),
-  BoolW (NotW, OrW),
-  NumOrdW (LessOrEqualW, LessW, GreaterW, GreaterOrEqualW),
-  IntW (AddW, NegateW),
-  SizeW (SizeOfW),
-  FunW (IdW, ComposeW, FlipW),
-  ListW (FoldMapW, SingletonListW, AppendW),
-  MapW (DomW, RngW, LookupW),
   NumSpec (..),
   MaybeBounded (..),
   NonEmpty ((:|)),
@@ -82,8 +74,8 @@ module Constrained.API (
   prodFst_,
   prod_,
   IsNormalType,
-  leftFn,
-  rightFn,
+  injLeft_,
+  injRight_,
   left_,
   right_,
   cJust_,
@@ -131,7 +123,6 @@ module Constrained.API (
   subset_,
   disjoint_,
   fromList_,
-  pattern Equal,
   pattern Elem,
   pattern ToGeneric,
   pattern FromGeneric,
@@ -150,7 +141,6 @@ module Constrained.API (
 where
 
 import Constrained.Base (
-  BaseW (..),
   Fun (..),
   HasSpec (..),
   Literal,
@@ -170,10 +160,7 @@ import Constrained.Base (
   notMemberSpec,
   toGeneric_,
   pattern Elem,
-  pattern Equal,
   pattern FromGeneric,
-  pattern InjLeft,
-  pattern InjRight,
   pattern ToGeneric,
  )
 import Constrained.Conformance (
@@ -184,10 +171,8 @@ import Constrained.Conformance (
 import Constrained.Core (NonEmpty ((:|)))
 import Constrained.Generic (HasSimpleRep (..), Prod (..))
 import Constrained.NumSpec (
-  IntW (..),
   MaybeBounded (..),
   NumLike,
-  NumOrdW (..),
   NumSpec (..),
   Numeric,
   OrdLike (..),
@@ -211,7 +196,7 @@ import Constrained.Spec.SumProd (
   fst_,
   isCon,
   isJust,
-  leftFn,
+  injLeft_,
   left_,
   match,
   onCon,
@@ -221,13 +206,12 @@ import Constrained.Spec.SumProd (
   prodSnd_,
   prod_,
   reify',
-  rightFn,
+  injRight_,
   right_,
   sel,
   snd_,
  )
 import Constrained.TheKnot (
-  BoolW (..),
   debugSpec,
   genFromSpec,
   genFromSpecT,
@@ -265,8 +249,6 @@ import Constrained.Syntax (
 
 import Constrained.Spec.ListFoldy (
   Foldy (..),
-  FunW (..),
-  ListW (..),
   append_,
   compose_,
   elem_,
@@ -279,7 +261,6 @@ import Constrained.Spec.ListFoldy (
 
 import Constrained.Spec.Map (
   MapSpec (..),
-  MapW (..),
   dom_,
   fstSpec,
   lookup_,
@@ -298,7 +279,6 @@ import Constrained.Spec.Set (
   union_,
  )
 import Constrained.Spec.Size (
-  SizeW (..),
   Sized (sizeOf),
   between,
   genFromSizeSpec,

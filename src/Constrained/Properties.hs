@@ -18,10 +18,6 @@ module Constrained.Properties where
 import Constrained.API
 import Constrained.Base (
   AppRequires,
-  CList (..),
-  Context (..),
-  Ctx (Ctx, HOLE),
-  Mode (..),
   appTerm,
   (/>),
  )
@@ -39,7 +35,7 @@ import Constrained.List (
   uncurryList_,
  )
 import Constrained.Spec.ListFoldy (genInverse)
-import Constrained.Syntax (PolyCList (..))
+import Constrained.Syntax
 import Constrained.TheKnot
 import qualified Data.List.NonEmpty as NE
 import Data.Map (Map)
