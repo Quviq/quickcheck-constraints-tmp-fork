@@ -378,8 +378,8 @@ instance Logic EqW where
     | t == t' = Just $ lit True
     | otherwise = Nothing
 
-  -- saturate EqualW (FromGeneric (InjLeft _) :> t :> Nil) = [toPreds t (SumSpec Nothing TrueSpec (ErrorSpec (pure "saturatePred")))]
-  -- saturate EqualW (FromGeneric (InjRight _) :> t :> Nil) = [toPreds t (SumSpec Nothing (ErrorSpec (pure "saturatePred")) TrueSpec)]
+  saturate EqualW (FromGeneric (InjLeft _) :> t :> Nil) = [toPreds t (SumSpec Nothing TrueSpec (ErrorSpec (pure "saturatePred")))]
+  saturate EqualW (FromGeneric (InjRight _) :> t :> Nil) = [toPreds t (SumSpec Nothing (ErrorSpec (pure "saturatePred")) TrueSpec)]
   saturate _ _ = error "TODO"
 
 infix 4 ==.
@@ -1609,3 +1609,141 @@ instance (HasSpec a, Arbitrary (TypeSpec a)) => Arbitrary (Specification a) wher
         )
       , (10, pure baseSpec)
       ]
+
+pattern Product ::
+  forall c.
+  () =>
+  forall a b.
+  ( c ~ Prod a b
+  , AppRequires ProdW '[a, b] (Prod a b)
+  ) =>
+  Term a -> Term b -> Term c
+pattern Product x y <- (App (sameWitness (ProdW @_ @_) -> Just (ProdW, Refl)) (x :> y :> Nil))
+
+-- ==================================================================
+-- The HasSpec instance for Sum is in TheKnot.
+-- Here are the Logic Instances for Sum
+-- ===================================================================
+
+-- ============= InjLeftW ====
+
+data SumW dom rng where
+  InjLeftW :: (HasSpec a, HasSpec b) => SumW '[a] (Sum a b)
+  InjRightW :: (HasSpec a, HasSpec b) => SumW '[b] (Sum a b)
+
+instance Show (SumW dom rng) where
+  show InjLeftW = "injLeft_"
+  show InjRightW = "injRight_"
+
+deriving instance (Eq (SumW dom rng))
+
+instance Syntax SumW
+
+instance Semantics SumW where
+  semantics InjLeftW = SumLeft
+  semantics InjRightW = SumRight
+
+instance Logic SumW where
+  propagate f ctxt (ExplainSpec es s) = explainSpec es $ propagate f ctxt s
+  propagate _ _ TrueSpec = TrueSpec
+  propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
+  propagate InjLeftW (NilCtx HOLE) spec = case spec of
+    SuspendedSpec v ps ->
+      constrained $ \v' -> Let (App InjLeftW (v' :> Nil)) (v :-> ps)
+    TypeSpec (SumSpec _ sl _) cant ->
+      sl <> foldMap notEqualSpec [a | SumLeft a <- cant]
+    MemberSpec es ->
+      case [a | SumLeft a <- NE.toList es] of
+        (x : xs) -> MemberSpec (x :| xs)
+        [] ->
+          ErrorSpec $
+            pure $
+              "propMemberSpec (sumleft_ HOLE) on (MemberSpec es) with no SumLeft in es: " ++ show (NE.toList es)
+
+  propagate InjRightW (NilCtx HOLE) spec = case spec of
+    SuspendedSpec v ps -> constrained $ \v' -> Let (App InjRightW (v' :> Nil)) (v :-> ps)
+    TypeSpec (SumSpec _ _ sr) cant -> sr <> foldMap notEqualSpec [a | SumRight a <- cant]
+    MemberSpec es ->
+      case [a | SumRight a <- NE.toList es] of
+        (x : xs) -> MemberSpec (x :| xs)
+        [] ->
+          ErrorSpec $
+            pure $
+              "propagate(InjRight HOLE) on (MemberSpec es) with no SumLeft in es: " ++ show (NE.toList es)
+
+  mapTypeSpec InjLeftW ts = typeSpec $ SumSpec Nothing (typeSpec ts) (ErrorSpec (pure "mapTypeSpec InjLeftW"))
+  mapTypeSpec InjRightW ts = typeSpec $ SumSpec Nothing (ErrorSpec (pure "mapTypeSpec InjRightW")) (typeSpec ts)
+
+injLeft_ :: (HasSpec a, HasSpec b, KnownNat (CountCases b)) => Term a -> Term (Sum a b)
+injLeft_ = appTerm InjLeftW
+
+injRight_ :: (HasSpec a, HasSpec b, KnownNat (CountCases b)) => Term b -> Term (Sum a b)
+injRight_ = appTerm InjRightW
+
+pattern InjRight ::
+  forall c.
+  () =>
+  forall a b.
+  ( c ~ Sum a b
+  , AppRequires SumW '[b] c
+  ) =>
+  Term b -> Term c
+pattern InjRight x <- (App (sameWitness (InjRightW @_ @_) -> Just (InjRightW, Refl)) (x :> Nil))
+
+pattern InjLeft ::
+  forall c.
+  () =>
+  forall a b.
+  ( c ~ Sum a b
+  , AppRequires SumW '[a] c
+  ) =>
+  Term a -> Term c
+pattern InjLeft x <- App (sameWitness (InjLeftW @a @b) -> Just (InjLeftW, Refl)) (x :> Nil)
+
+data ElemW :: FSType where
+  ElemW :: HasSpec a => ElemW '[a, [a]] Bool
+
+deriving instance Eq (ElemW dom rng)
+
+instance Show (ElemW dom rng) where
+  show ElemW = "elem_"
+
+instance Logic ElemW where
+  propagate f ctxt (ExplainSpec [] s) = propagate f ctxt s
+  propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
+  propagate _ _ TrueSpec = TrueSpec
+  propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
+  propagate ElemW (HOLE :? Value x :> Nil) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App ElemW (v' :> Lit x :> Nil)) (v :-> ps)
+  propagate ElemW (Value x :! NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App ElemW (Lit x :> v' :> Nil)) (v :-> ps)
+  propagate ElemW (HOLE :? Value es :> Nil) spec =
+    caseBoolSpec spec $ \case
+      True -> memberSpecList (nub es) (pure "propagate on (elem_ x []), The empty list, [], has no solution")
+      False -> notMemberSpec es
+  propagate ElemW (Value e :! NilCtx HOLE) spec =
+    caseBoolSpec spec $ \case
+      True -> typeSpec (ListSpec Nothing [e] mempty mempty NoFold)
+      False -> typeSpec (ListSpec Nothing mempty mempty (notEqualSpec e) NoFold)
+
+  rewriteRules ElemW (_ :> Lit [] :> Nil) Evidence = Just $ Lit False
+  rewriteRules ElemW (t :> Lit [a] :> Nil) Evidence = Just $ t ==. (Lit a)
+  rewriteRules _ _ _ = Nothing
+
+  saturate ElemW (FromGeneric (Product (x :: Term m) (y :: Term n)) :> Lit zs :> Nil) = case zs of
+        (w : ws) -> [ElemPred True x (fmap fst (w :| ws))]
+        [] -> [FalsePred (pure $ "empty list, zs , in elem_ " ++ show (x, y) ++ " zs")]
+  saturate ElemW (x :> Lit (y : ys) :> Nil) = [satisfies x (MemberSpec (y :| ys))]
+  saturate _ _ = []
+
+pattern Elem ::
+  forall b.
+  () =>
+  forall a.
+  (b ~ Bool, Eq a, HasSpec a) =>
+  Term a -> Term [a] -> Term b
+pattern Elem x y <-
+  ( App
+      (sameWitness (ElemW @()) -> Just (ElemW, Refl))
+      (x :> y :> Nil)
+    )

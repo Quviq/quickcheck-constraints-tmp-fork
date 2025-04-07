@@ -137,12 +137,11 @@ instance Logic FunW where
   propagate f ctxt (ExplainSpec [] s) = propagate f ctxt s
   propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
   propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
-  -- propagate (Context IdW (NilCtx HOLE)) spec = spec
-  -- propagate (Context (FlipW f) (HOLE :<> v :<| End)) spec = propagate (Context f (v :|> NilCtx HOLE)) spec
-  -- propagate (Context (FlipW f) (v :|> NilCtx HOLE)) spec = propagate (Context f (HOLE :<> v :<| End)) spec
-  -- propagate (Context (ComposeW (f :: t1' '[b'] r') (g :: t2' '[a'] b'')) (NilCtx HOLE)) spec =
-  --   propagate (Context g (NilCtx HOLE)) $ propagate (Context f (NilCtx HOLE)) spec
-  propagate _ _ _ = error "TODO"
+  propagate IdW (NilCtx HOLE) spec = spec
+  propagate (FlipW f) (HOLE :? Value v :> Nil) spec = propagate f (Value v :! NilCtx HOLE) spec
+  propagate (FlipW f) (Value v :! NilCtx HOLE) spec = propagate f (HOLE :? Value v :> Nil) spec
+  propagate (ComposeW (f :: t1' '[b'] r') (g :: t2' '[a'] b'')) (NilCtx HOLE) spec =
+    propagate g (NilCtx HOLE) $ propagate f (NilCtx HOLE) spec
 
   mapTypeSpec IdW ts = typeSpec ts
   mapTypeSpec (ComposeW g h) ts = mapSpec g . mapSpec h $ typeSpec ts
@@ -518,36 +517,6 @@ toPredsFoldSpec x (FoldSpec funAB sspec) =
 
 -- ============ Logicbol for ElemW
 
--- instance HasSpec a => Logic "elem_" BaseW '[a, [a]] Bool where
---   propagate ctxt (ExplainSpec [] s) = propagate ctxt s
---   propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
---   propagate _ TrueSpec = TrueSpec
---   propagate _ (ErrorSpec msgs) = ErrorSpec msgs
---   propagate (Context ElemW (HOLE :<> x :<| End)) (SuspendedSpec v ps) =
---     constrained $ \v' -> Let (App ElemW (v' :> Lit x :> Nil)) (v :-> ps)
---   propagate (Context ElemW (x :|> NilCtx HOLE)) (SuspendedSpec v ps) =
---     constrained $ \v' -> Let (App ElemW (Lit x :> v' :> Nil)) (v :-> ps)
---   propagate (Context ElemW (HOLE :<> es :<| End)) spec =
---     caseBoolSpec spec $ \case
---       True -> memberSpecList (nub es) (pure "propagate on (elem_ x []), The empty list, [], has no solution")
---       False -> notMemberSpec es
---   propagate (Context ElemW (e :|> NilCtx HOLE)) spec =
---     caseBoolSpec spec $ \case
---       True -> typeSpec (ListSpec Nothing [e] mempty mempty NoFold)
---       False -> typeSpec (ListSpec Nothing mempty mempty (notEqualSpec e) NoFold)
---   propagate ctx _ =
---     ErrorSpec $ pure ("Logic instance for ElemW with wrong number of arguments. " ++ show ctx)
-
---   rewriteRules ElemW (_ :> Lit [] :> Nil) Evidence = Just $ Lit False
---   rewriteRules ElemW (t :> Lit [a] :> Nil) Evidence = Just $ t ==. (Lit a)
---   rewriteRules _ _ _ = Nothing
-
---   saturate ElemW (FromGeneric (Product (x :: Term m) (y :: Term n)) :> Lit zs :> Nil)
---     | Just Refl <- eqT @a @(m, n) = case zs of
---         (w : ws) -> [ElemPred True x (fmap fst (w :| ws))]
---         [] -> [FalsePred (pure $ "empty list, zs , in elem_ " ++ show (x, y) ++ " zs")]
---   saturate ElemW (x :> Lit (y : ys) :> Nil) = [satisfies x (MemberSpec (y :| ys))]
---   saturate _ _ = []
 
 infix 4 `elem_`
 elem_ :: (Sized [a], HasSpec a) => Term a -> Term [a] -> Term Bool
@@ -1259,3 +1228,51 @@ maxFromSpec dv s@(SuspendedSpec _ _) =
 maxFromSpec dv (ErrorSpec _) = dv
 maxFromSpec _ (MemberSpec xs) = maximum xs
 maxFromSpec dv (TypeSpec (NumSpecInterval _ hi) _) = maybe dv id hi
+
+data ElemW :: FSType where
+  ElemW :: HasSpec a => ElemW '[a, [a]] Bool
+
+deriving instance Eq (ElemW dom rng)
+
+instance Show (ElemW dom rng) where
+  show ElemW = "elem_"
+
+instance Logic (ElemW dom rng) where
+  propagate ctxt (ExplainSpec [] s) = propagate ctxt s
+  propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
+  propagate _ TrueSpec = TrueSpec
+  propagate _ (ErrorSpec msgs) = ErrorSpec msgs
+  propagate ElemW (HOLE :? Value x :> Nil) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App ElemW (v' :> Lit x :> Nil)) (v :-> ps)
+  propagate ElemW (Value x :! NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App ElemW (Lit x :> v' :> Nil)) (v :-> ps)
+  propagate ElemW (HOLE :? Value es :> Nil) spec =
+    caseBoolSpec spec $ \case
+      True -> memberSpecList (nub es) (pure "propagate on (elem_ x []), The empty list, [], has no solution")
+      False -> notMemberSpec es
+  propagate ElemW (Value e :! NilCtx HOLE) spec =
+    caseBoolSpec spec $ \case
+      True -> typeSpec (ListSpec Nothing [e] mempty mempty NoFold)
+      False -> typeSpec (ListSpec Nothing mempty mempty (notEqualSpec e) NoFold)
+
+  rewriteRules ElemW (_ :> Lit [] :> Nil) Evidence = Just $ Lit False
+  rewriteRules ElemW (t :> Lit [a] :> Nil) Evidence = Just $ t ==. (Lit a)
+  rewriteRules _ _ _ = Nothing
+
+  saturate ElemW (FromGeneric (Product (x :: Term m) (y :: Term n)) :> Lit zs :> Nil) = case zs of
+        (w : ws) -> [ElemPred True x (fmap fst (w :| ws))]
+        [] -> [FalsePred (pure $ "empty list, zs , in elem_ " ++ show (x, y) ++ " zs")]
+  saturate ElemW (x :> Lit (y : ys) :> Nil) = [satisfies x (MemberSpec (y :| ys))]
+  saturate _ _ = []
+
+pattern Elem ::
+  forall b.
+  () =>
+  forall a.
+  (b ~ Bool, Eq a, HasSpec a) =>
+  Term a -> Term [a] -> Term b
+pattern Elem x y <-
+  ( App
+      (sameWitness (ElemW @()) -> Just (ElemW, Refl))
+      (x :> y :> Nil)
+    )

@@ -36,13 +36,7 @@ import Constrained.Core
 import Constrained.GenT
 import Constrained.List
 import Constrained.NumSpec
-import Constrained.Spec.ListFoldy (
-  FoldSpec (..),
-  -- ListSpec (..),
-  -- elem_,
-  knownUpperBound,
-  maxFromSpec,
- )
+import Constrained.Spec.ListFoldy
 import Constrained.Spec.Size (Sized (..), maxSpec, sizeOf_)
 import Constrained.Syntax
 import Constrained.TheKnot
@@ -385,14 +379,14 @@ instance Logic SetW where
     | (Value e :! NilCtx HOLE) <- ctx = caseBoolSpec spec $ \case
         True -> typeSpec $ SetSpec (Set.singleton e) mempty mempty
         False -> typeSpec $ SetSpec mempty (notEqualSpec e) mempty
-  propagate DisjointW (HOLE :<> x :<| End) (SuspendedSpec v ps) =
+  propagate DisjointW (HOLE :? Value x :> Nil) (SuspendedSpec v ps) =
     constrained $ \v' -> Let (App DisjointW (v' :> Lit x :> Nil)) (v :-> ps)
-  propagate (Context DisjointW (x :|> NilCtx HOLE)) (SuspendedSpec v ps) =
+  propagate DisjointW (Value x :! NilCtx HOLE) (SuspendedSpec v ps) =
     constrained $ \v' -> Let (App DisjointW (Lit x :> v' :> Nil)) (v :-> ps)
-  propagate (Context DisjointW ctx) spec
-    | (HOLE :<> (s :: Set a) :<| End) <- ctx =
-        propagate (Context DisjointW (s :|> NilCtx HOLE)) spec
-    | ((s :: Set a) :|> NilCtx HOLE) <- ctx
+  propagate DisjointW ctx spec
+    | (HOLE :? Value (s :: Set a) :> Nil) <- ctx =
+        propagate DisjointW (Value s :! NilCtx HOLE) spec
+    | (Value (s :: Set a) :! NilCtx HOLE) <- ctx
     , Evidence <- prerequisites @(Set a) = caseBoolSpec spec $ \case
         True -> typeSpec $ SetSpec mempty (notMemberSpec s) mempty
         False -> constrained $ \set ->
@@ -401,6 +395,40 @@ instance Logic SetW where
             , Assert $ member_ e (Lit s)
             , Assert $ member_ e set
             ]
+  propagate FromListW (NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App FromListW (v' :> Nil)) (v :-> ps)
+  propagate FromListW (NilCtx HOLE) spec =
+        case spec of
+          MemberSpec (xs :| []) ->
+            typeSpec $
+              ListSpec
+                Nothing
+                (Set.toList xs)
+                TrueSpec
+                ( memberSpecList
+                    (Set.toList xs)
+                    (pure "propagateSpec (fromList_ HOLE) on (MemberSpec xs) where the set 'xs' is empty")
+                )
+                NoFold
+          TypeSpec (SetSpec must elemSpec sizeSpec) []
+            | TrueSpec <- sizeSpec -> typeSpec $ ListSpec Nothing (Set.toList must) TrueSpec elemSpec NoFold
+            | TypeSpec (NumSpecInterval (Just l) Nothing) cantSize <- sizeSpec
+            , l <= sizeOf must
+            , all (< sizeOf must) cantSize ->
+                typeSpec $ ListSpec Nothing (Set.toList must) TrueSpec elemSpec NoFold
+          _ ->
+            -- Here we simply defer to basically generating the universe that we can
+            -- draw from according to `spec` first and then fold that into the spec for the list.
+            -- The tricky thing about this is that it may not play super nicely with other constraints
+            -- on the list. For this reason it's important to try to find as many possible work-arounds
+            -- in the above cases as possible.
+            constrained $ \xs ->
+              exists (\eval -> pure $ Set.fromList (eval xs)) $ \s ->
+                [ s `satisfies` spec
+                , xs `DependsOn` s
+                , forAll xs $ \e -> e `member_` s
+                , forAll s $ \e -> e `elem_` xs
+                ]
 
   mapTypeSpec FromListW ts =
     constrained $ \x ->
@@ -469,41 +497,6 @@ disjoint_ = appTerm DisjointW
 --   propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
 --   propagate _ TrueSpec = TrueSpec
 --   propagate _ (ErrorSpec msgs) = ErrorSpec msgs
---   propagate (Context FromListW (NilCtx HOLE)) (SuspendedSpec v ps) =
---     constrained $ \v' -> Let (App FromListW (v' :> Nil)) (v :-> ps)
---   propagate (Context FromListW (NilCtx HOLE)) spec
---     | Evidence <- prerequisites @[a] =
---         case spec of
---           MemberSpec (xs :| []) ->
---             typeSpec $
---               ListSpec
---                 Nothing
---                 (Set.toList xs)
---                 TrueSpec
---                 ( memberSpecList
---                     (Set.toList xs)
---                     (pure "propagateSpec (fromList_ HOLE) on (MemberSpec xs) where the set 'xs' is empty")
---                 )
---                 NoFold
---           TypeSpec (SetSpec must elemSpec sizeSpec) []
---             | TrueSpec <- sizeSpec -> typeSpec $ ListSpec Nothing (Set.toList must) TrueSpec elemSpec NoFold
---             | TypeSpec (NumSpecInterval (Just l) Nothing) cantSize <- sizeSpec
---             , l <= sizeOf must
---             , all (< sizeOf must) cantSize ->
---                 typeSpec $ ListSpec Nothing (Set.toList must) TrueSpec elemSpec NoFold
---           _ ->
---             -- Here we simply defer to basically generating the universe that we can
---             -- draw from according to `spec` first and then fold that into the spec for the list.
---             -- The tricky thing about this is that it may not play super nicely with other constraints
---             -- on the list. For this reason it's important to try to find as many possible work-arounds
---             -- in the above cases as possible.
---             constrained $ \xs ->
---               exists (\eval -> pure $ Set.fromList (eval xs)) $ \s ->
---                 [ s `satisfies` spec
---                 , xs `DependsOn` s
---                 , forAll xs $ \e -> e `member_` s
---                 , forAll s $ \e -> e `elem_` xs
---                 ]
 --   propagate ctx _ = ErrorSpec $ pure ("Logic instance for FromListW with wrong number of arguments. " ++ show ctx)
 
 --   mapTypeSpec FromListW ts =

@@ -473,25 +473,19 @@ type GenericRequires a =
 data BaseW (dom :: [Type]) (rng :: Type) where
   ToGenericW :: GenericRequires a => BaseW '[a] (SimpleRep a)
   FromGenericW :: GenericRequires a => BaseW '[SimpleRep a] a
-  ElemW :: forall a. Eq a => BaseW '[a, [a]] Bool
-
 deriving instance Eq (BaseW dom rng)
 
 instance Show (BaseW d r) where
   show ToGenericW = "toSimpleRep"
   show FromGenericW = "fromSimpleRep"
-  show ElemW = "elem_"
 
 instance Syntax BaseW where
-  prettyWit ElemW (y :> Lit n :> Nil) prec = Just $ parensIf (prec > 10) $ "elem_" <+> prettyPrec 10 y <+> short n
   prettyWit ToGenericW (x :> Nil) p = Just $ "to" <+> pretty (WithPrec p x)
   prettyWit FromGenericW (x :> Nil) p = Just $ "from" <+> pretty (WithPrec p x)
-  prettyWit _ _ _ = Nothing
 
 instance Semantics BaseW where
   semantics FromGenericW = fromSimpleRep
   semantics ToGenericW = toSimpleRep
-  semantics ElemW = elem
 
 -- -- ============== ToGenericW Logic instance
 
@@ -508,7 +502,6 @@ instance Logic BaseW where
     constrained $ \v' -> Let (App FromGenericW (v' :> Nil)) (v :-> ps)
   propagate FromGenericW (NilCtx HOLE) (TypeSpec s cant) = TypeSpec s (toSimpleRep <$> cant)
   propagate FromGenericW (NilCtx HOLE) (MemberSpec es) = MemberSpec (fmap toSimpleRep es)
-  propagate _ _ _ = error "TODO"
 
   mapTypeSpec ToGenericW ts = typeSpec ts
   mapTypeSpec FromGenericW ts = typeSpec ts
@@ -1123,17 +1116,6 @@ instance HasSpec () where
 -- The commented out Constructor patterns , work but have such convoluted types,
 -- that without a monomorphic typing, are basically useless. Use the xxx_ functions instead.
 
-pattern Elem ::
-  forall b.
-  () =>
-  forall a.
-  (b ~ Bool, Eq a, HasSpec a) =>
-  Term a -> Term [a] -> Term b
-pattern Elem x y <-
-  ( App
-      (sameWitness (ElemW @()) -> Just (ElemW, Refl))
-      (x :> y :> Nil)
-    )
 
 pattern FromGeneric ::
   forall rng.
