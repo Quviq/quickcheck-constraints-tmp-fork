@@ -137,11 +137,11 @@ instance Logic FunW where
   propagate f ctxt (ExplainSpec [] s) = propagate f ctxt s
   propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
   propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
-  -- propagate (Context IdW (HOLE :<> End)) spec = spec
-  -- propagate (Context (FlipW f) (HOLE :<> v :<| End)) spec = propagate (Context f (v :|> HOLE :<> End)) spec
-  -- propagate (Context (FlipW f) (v :|> HOLE :<> End)) spec = propagate (Context f (HOLE :<> v :<| End)) spec
-  -- propagate (Context (ComposeW (f :: t1' '[b'] r') (g :: t2' '[a'] b'')) (HOLE :<> End)) spec =
-  --   propagate (Context g (HOLE :<> End)) $ propagate (Context f (HOLE :<> End)) spec
+  -- propagate (Context IdW (NilCtx HOLE)) spec = spec
+  -- propagate (Context (FlipW f) (HOLE :<> v :<| End)) spec = propagate (Context f (v :|> NilCtx HOLE)) spec
+  -- propagate (Context (FlipW f) (v :|> NilCtx HOLE)) spec = propagate (Context f (HOLE :<> v :<| End)) spec
+  -- propagate (Context (ComposeW (f :: t1' '[b'] r') (g :: t2' '[a'] b'')) (NilCtx HOLE)) spec =
+  --   propagate (Context g (NilCtx HOLE)) $ propagate (Context f (NilCtx HOLE)) spec
   propagate _ _ _ = error "TODO"
 
   mapTypeSpec IdW ts = typeSpec ts
@@ -377,8 +377,8 @@ conformsToFoldSpec xs (FoldSpec (Fun f) s) = adds (map (semantics f) xs) `confor
 
 data ListW (args :: [Type]) (res :: Type) where
   FoldMapW :: forall a b. (Foldy b, HasSpec a) => Fun '[a] b -> ListW '[[a]] b
-  SingletonListW :: ListW '[a] [a]
-  AppendW :: (Typeable a, Show a) => ListW '[[a], [a]] [a]
+  SingletonListW :: HasSpec a => ListW '[a] [a]
+  AppendW :: (HasSpec a, Typeable a, Show a) => ListW '[[a], [a]] [a]
 
 -- ====================== Semantics for ListW
 
@@ -407,13 +407,80 @@ instance Logic ListW where
   propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
   propagate _ _ TrueSpec = TrueSpec
   propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
-  -- propagate (Context (FoldMapW f) (HOLE :<> End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App (FoldMapW f) (v' :> Nil)) (v :-> ps)
-  -- propagate (Context (FoldMapW f) (HOLE :<> End)) (TypeSpec ts cant) =
-  --   typeSpec (ListSpec Nothing [] TrueSpec TrueSpec $ FoldSpec f (TypeSpec ts cant))
-  -- propagate (Context (FoldMapW f) (HOLE :<> End)) (MemberSpec es) =
-  --   typeSpec (ListSpec Nothing [] TrueSpec TrueSpec $ FoldSpec f (MemberSpec es))
-  propagate _ _ _ = error "TODO"
+  propagate (FoldMapW f) (NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App (FoldMapW f) (v' :> Nil)) (v :-> ps)
+  propagate (FoldMapW f) (NilCtx HOLE) (TypeSpec ts cant) =
+    typeSpec (ListSpec Nothing [] TrueSpec TrueSpec $ FoldSpec f (TypeSpec ts cant))
+  propagate (FoldMapW f) (NilCtx HOLE) (MemberSpec es) =
+    typeSpec (ListSpec Nothing [] TrueSpec TrueSpec $ FoldSpec f (MemberSpec es))
+  propagate SingletonListW (NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App SingletonListW (v' :> Nil)) (v :-> ps)
+  propagate SingletonListW (NilCtx HOLE) (TypeSpec (ListSpec _ m sz e f) cant)
+    | length m > 1 =
+        ErrorSpec $
+          NE.fromList
+            [ "Too many required elements for SingletonListW : "
+            , "  " ++ show m
+            ]
+    | not $ 1 `conformsToSpec` sz =
+        ErrorSpec $ pure $ "Size spec requires too many elements for SingletonListW : " ++ show sz
+    | bad@(_ : _) <- filter (not . (`conformsToSpec` e)) m =
+        ErrorSpec $
+          NE.fromList
+            [ "The following elements of the must spec do not conforms to the elem spec:"
+            , show bad
+            ]
+    -- There is precisely one required element in the final list, so the argument to singletonList_ has to
+    -- be that element and we have to respect the cant and fold specs
+    | [a] <- m = equalSpec a <> notMemberSpec [z | [z] <- cant] <> reverseFoldSpec f
+    -- We have to respect the elem-spec, the can't spec, and the fold spec.
+    | otherwise = e <> notMemberSpec [a | [a] <- cant] <> reverseFoldSpec f
+  propagate SingletonListW (NilCtx HOLE) (MemberSpec xss) =
+    case [a | [a] <- NE.toList xss] of
+      [] ->
+        ErrorSpec $ (pure "PropagateSpec SingletonListW  with MemberSpec which has no lists of length 1")
+      (x : xs) -> MemberSpec (x :| xs)
+  propagate AppendW (HOLE :? Value x :> Nil) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App AppendW (v' :> Lit x :> Nil)) (v :-> ps)
+  propagate AppendW (Value x :! NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App AppendW (Lit x :> v' :> Nil)) (v :-> ps)
+  propagate AppendW ctx (TypeSpec (ts@ListSpec {listSpecElem = e}) cant)
+    | (HOLE :? Value (ys :: [a]) :> Nil) <- ctx
+    , Evidence <- prerequisites @[a]
+    , all (`conformsToSpec` e) ys =
+        TypeSpec (alreadyHave ys ts) (suffixedBy ys cant)
+    | (Value (ys :: [a]) :! NilCtx HOLE) <- ctx
+    , Evidence <- prerequisites @[a]
+    , all (`conformsToSpec` e) ys =
+        TypeSpec (alreadyHave ys ts) (prefixedBy ys cant)
+    | otherwise = ErrorSpec $ pure "The spec given to propagate for AppendW is inconsistent!"
+  propagate AppendW ctx (MemberSpec xss)
+    | (HOLE :? Value (ys :: [a]) :> Nil) <- ctx
+    , Evidence <- prerequisites @[a] =
+        -- Only keep the prefixes of the elements of xss that can
+        -- give you the correct resulting list
+        case suffixedBy ys (NE.toList xss) of
+          [] ->
+            ErrorSpec
+              ( NE.fromList
+                  [ "propagateSpecFun (append HOLE ys) with (MemberSpec xss)"
+                  , "there are no elements in xss with suffix ys"
+                  ]
+              )
+          (x : xs) -> MemberSpec (x :| xs)
+    | (Value (ys :: [a]) :! NilCtx HOLE) <- ctx
+    , Evidence <- prerequisites @[a] =
+        -- Only keep the suffixes of the elements of xss that can
+        -- give you the correct resulting list
+        case prefixedBy ys (NE.toList xss) of
+          [] ->
+            ErrorSpec
+              ( NE.fromList
+                  [ "propagateSpecFun (append ys HOLE) with (MemberSpec xss)"
+                  , "there are no elements in xss with prefix ys"
+                  ]
+              )
+          (x : xs) -> MemberSpec (x :| xs)
 
   mapTypeSpec SingletonListW ts = typeSpec (ListSpec Nothing [] (equalSpec 1) (typeSpec ts) NoFold)
   mapTypeSpec (FoldMapW g) ts =
@@ -458,13 +525,13 @@ toPredsFoldSpec x (FoldSpec funAB sspec) =
 --   propagate _ (ErrorSpec msgs) = ErrorSpec msgs
 --   propagate (Context ElemW (HOLE :<> x :<| End)) (SuspendedSpec v ps) =
 --     constrained $ \v' -> Let (App ElemW (v' :> Lit x :> Nil)) (v :-> ps)
---   propagate (Context ElemW (x :|> HOLE :<> End)) (SuspendedSpec v ps) =
+--   propagate (Context ElemW (x :|> NilCtx HOLE)) (SuspendedSpec v ps) =
 --     constrained $ \v' -> Let (App ElemW (Lit x :> v' :> Nil)) (v :-> ps)
 --   propagate (Context ElemW (HOLE :<> es :<| End)) spec =
 --     caseBoolSpec spec $ \case
 --       True -> memberSpecList (nub es) (pure "propagate on (elem_ x []), The empty list, [], has no solution")
 --       False -> notMemberSpec es
---   propagate (Context ElemW (e :|> HOLE :<> End)) spec =
+--   propagate (Context ElemW (e :|> NilCtx HOLE)) spec =
 --     caseBoolSpec spec $ \case
 --       True -> typeSpec (ListSpec Nothing [e] mempty mempty NoFold)
 --       False -> typeSpec (ListSpec Nothing mempty mempty (notEqualSpec e) NoFold)
@@ -496,33 +563,6 @@ elemFn = Fun ElemW
 --   propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
 --   propagate _ TrueSpec = TrueSpec
 --   propagate _ (ErrorSpec msgs) = ErrorSpec msgs
---   propagate (Context SingletonListW (HOLE :<> End)) (SuspendedSpec v ps) =
---     constrained $ \v' -> Let (App SingletonListW (v' :> Nil)) (v :-> ps)
---   propagate (Context SingletonListW (HOLE :<> End)) (TypeSpec (ListSpec _ m sz e f) cant)
---     | length m > 1 =
---         ErrorSpec $
---           NE.fromList
---             [ "Too many required elements for SingletonListW : "
---             , "  " ++ show m
---             ]
---     | not $ 1 `conformsToSpec` sz =
---         ErrorSpec $ pure $ "Size spec requires too many elements for SingletonListW : " ++ show sz
---     | bad@(_ : _) <- filter (not . (`conformsToSpec` e)) m =
---         ErrorSpec $
---           NE.fromList
---             [ "The following elements of the must spec do not conforms to the elem spec:"
---             , show bad
---             ]
---     -- There is precisely one required element in the final list, so the argument to singletonList_ has to
---     -- be that element and we have to respect the cant and fold specs
---     | [a] <- m = equalSpec a <> notMemberSpec [z | [z] <- cant] <> reverseFoldSpec f
---     -- We have to respect the elem-spec, the can't spec, and the fold spec.
---     | otherwise = e <> notMemberSpec [a | [a] <- cant] <> reverseFoldSpec f
---   propagate (Context SingletonListW (HOLE :<> End)) (MemberSpec xss) =
---     case [a | [a] <- NE.toList xss] of
---       [] ->
---         ErrorSpec $ (pure "PropagateSpec SingletonListW  with MemberSpec which has no lists of length 1")
---       (x : xs) -> MemberSpec (x :| xs)
 --   propagate ctx _ =
 --     ErrorSpec $ pure ("Logic instance for SingletonListW with wrong number of arguments. " ++ show ctx)
 
@@ -545,47 +585,6 @@ singletonListFn = Fun SingletonListW
 --   propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
 --   propagate _ TrueSpec = TrueSpec
 --   propagate _ (ErrorSpec msgs) = ErrorSpec msgs
---   propagate (Context AppendW (HOLE :<> x :<| End)) (SuspendedSpec v ps) =
---     constrained $ \v' -> Let (App AppendW (v' :> Lit x :> Nil)) (v :-> ps)
---   propagate (Context AppendW (x :|> HOLE :<> End)) (SuspendedSpec v ps) =
---     constrained $ \v' -> Let (App AppendW (Lit x :> v' :> Nil)) (v :-> ps)
---   propagate (Context AppendW ctx) (TypeSpec (ts@ListSpec {listSpecElem = e}) cant)
---     | (HOLE :<> (ys :: [a]) :<| End) <- ctx
---     , Evidence <- prerequisites @[a]
---     , all (`conformsToSpec` e) ys =
---         TypeSpec (alreadyHave ys ts) (suffixedBy ys cant)
---     | ((ys :: [a]) :|> HOLE :<> End) <- ctx
---     , Evidence <- prerequisites @[a]
---     , all (`conformsToSpec` e) ys =
---         TypeSpec (alreadyHave ys ts) (prefixedBy ys cant)
---     | otherwise = ErrorSpec $ pure "The spec given to propagate for AppendW is inconsistent!"
---   propagate (Context AppendW ctx) (MemberSpec xss)
---     | (HOLE :<> (ys :: [a]) :<| End) <- ctx
---     , Evidence <- prerequisites @[a] =
---         -- Only keep the prefixes of the elements of xss that can
---         -- give you the correct resulting list
---         case suffixedBy ys (NE.toList xss) of
---           [] ->
---             ErrorSpec
---               ( NE.fromList
---                   [ "propagateSpecFun (append HOLE ys) with (MemberSpec xss)"
---                   , "there are no elements in xss with suffix ys"
---                   ]
---               )
---           (x : xs) -> MemberSpec (x :| xs)
---     | ((ys :: [a]) :|> HOLE :<> End) <- ctx
---     , Evidence <- prerequisites @[a] =
---         -- Only keep the suffixes of the elements of xss that can
---         -- give you the correct resulting list
---         case prefixedBy ys (NE.toList xss) of
---           [] ->
---             ErrorSpec
---               ( NE.fromList
---                   [ "propagateSpecFun (append ys HOLE) with (MemberSpec xss)"
---                   , "there are no elements in xss with prefix ys"
---                   ]
---               )
---           (x : xs) -> MemberSpec (x :| xs)
 --   propagate ctx _ =
 --     ErrorSpec $ pure ("Logic instance for AppendW with wrong number of arguments. " ++ show ctx)
 

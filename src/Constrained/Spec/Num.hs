@@ -26,17 +26,6 @@ infix 4 -.
 (-.) :: Numeric n => Term n -> Term n -> Term n
 (-.) x y = addFn x (negateFn y)
 
-instance HasSpec Int where
-  type TypeSpec Int = NumSpec Int
-  emptySpec = emptyNumSpec
-  combineSpec = combineNumSpec
-  genFromTypeSpec = genFromNumSpec
-  shrinkWithTypeSpec = shrinkWithNumSpec
-  conformsTo = conformsToNumSpec
-  toPreds = toPredsNumSpec
-  cardinalTypeSpec = cardinalNumSpec
-  guardTypeSpec = guardNumSpec
-
 instance HasSpec (Ratio Integer) where
   type TypeSpec (Ratio Integer) = NumSpec (Ratio Integer)
   emptySpec = emptyNumSpec

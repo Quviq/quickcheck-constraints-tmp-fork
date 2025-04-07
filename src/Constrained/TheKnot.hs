@@ -39,15 +39,7 @@ import Constrained.Generic
 import Constrained.NumSpec
 import Constrained.Syntax
 
-import Constrained.Core (
-  Evidence (..),
-  NonEmpty ((:|)),
-  Var (..),
-  eqVar,
-  freshen,
-  unValue,
-  unionWithMaybe,
- )
+import Constrained.Core
 import Constrained.Env
 import Constrained.GenT
 import Constrained.Graph hiding (dependency, irreflexiveDependencyOn, noDependencies)
@@ -313,19 +305,18 @@ instance Logic BoolW where
   propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
   propagate _ _ TrueSpec = TrueSpec
   propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
-  -- propagate (Context NotW (HOLE :<> End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App NotW (v' :> Nil)) (v :-> ps)
-  -- propagate (Context NotW (HOLE :<> End)) spec =
-  --   caseBoolSpec spec (equalSpec . not)
-  -- propagate (Context OrW (HOLE :<> x :<| End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App OrW (v' :> Lit x :> Nil)) (v :-> ps)
-  -- propagate (Context OrW (x :|> HOLE :<> End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App OrW (Lit x :> v' :> Nil)) (v :-> ps)
-  -- propagate (Context OrW (HOLE :<> (s :: Bool) :<| End)) spec =
-  --   caseBoolSpec spec (okOr s)
-  -- propagate (Context OrW ((s :: Bool) :|> HOLE :<> End)) spec =
-  --   caseBoolSpec spec (okOr s)
-  propagate _ _ _ = error "TODO"
+  propagate NotW (NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App NotW (v' :> Nil)) (v :-> ps)
+  propagate NotW (NilCtx HOLE) spec =
+    caseBoolSpec spec (equalSpec . not)
+  propagate OrW (HOLE :? Value x :> Nil) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App OrW (v' :> Lit x :> Nil)) (v :-> ps)
+  propagate OrW (Value x :! NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App OrW (Lit x :> v' :> Nil)) (v :-> ps)
+  propagate OrW (HOLE :? Value s :> Nil) spec =
+    caseBoolSpec spec (okOr s)
+  propagate OrW (Value s :! NilCtx HOLE) spec =
+    caseBoolSpec spec (okOr s)
 
   mapTypeSpec NotW (SumSpec h a b) = typeSpec $ SumSpec h b a
 
@@ -351,7 +342,7 @@ or_ = appTerm OrW
 -- ======= Logic instance EqualW(==.)
 
 data EqW :: FSType where
-  EqualW :: Eq a => EqW '[a, a] Bool
+  EqualW :: (Eq a, HasSpec a) => EqW '[a, a] Bool
 
 deriving instance Eq (EqW dom rng)
 
@@ -370,15 +361,18 @@ instance Logic EqW where
   propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
   propagate _ _ TrueSpec = TrueSpec
   propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
-  -- propagate (Context EqualW (HOLE :<> x :<| End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App EqualW (v' :> Lit x :> Nil)) (v :-> ps)
-  -- propagate (Context EqualW (x :|> HOLE :<> End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App EqualW (Lit x :> v' :> Nil)) (v :-> ps)
-  -- propagate (Context EqualW (HOLE :<> (s :: a) :<| End)) spec =
-  --   caseBoolSpec spec $ \case True -> equalSpec s; False -> notEqualSpec s
-  -- propagate (Context EqualW ((s :: a) :|> HOLE :<> End)) spec =
-  -- caseBoolSpec spec $ \case True -> equalSpec s; False -> notEqualSpec s
-  propagate _ _ _ = error "TODO"
+  propagate EqualW (HOLE :? Value x :> Nil) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App EqualW (v' :> Lit x :> Nil)) (v :-> ps)
+  propagate EqualW (Value x :! NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App EqualW (Lit x :> v' :> Nil)) (v :-> ps)
+  propagate EqualW (HOLE :? Value s :> Nil) spec =
+    caseBoolSpec spec $ \case
+      True -> equalSpec s
+      False -> notEqualSpec s
+  propagate EqualW (Value s :! NilCtx HOLE) spec =
+    caseBoolSpec spec $ \case
+      True -> equalSpec s
+      False -> notEqualSpec s
 
   rewriteRules EqualW (t :> t' :> Nil) Evidence
     | t == t' = Just $ lit True
@@ -386,7 +380,7 @@ instance Logic EqW where
 
   -- saturate EqualW (FromGeneric (InjLeft _) :> t :> Nil) = [toPreds t (SumSpec Nothing TrueSpec (ErrorSpec (pure "saturatePred")))]
   -- saturate EqualW (FromGeneric (InjRight _) :> t :> Nil) = [toPreds t (SumSpec Nothing (ErrorSpec (pure "saturatePred")) TrueSpec)]
-  saturate _ _ = []
+  saturate _ _ = error "TODO"
 
 infix 4 ==.
 (==.) :: HasSpec a => Term a -> Term a -> Term Bool
@@ -429,6 +423,18 @@ instance HasSpec Integer where
   cardinalTypeSpec = cardinalNumSpec
   guardTypeSpec = guardNumSpec
 
+instance HasSpec Int where
+  type TypeSpec Int = NumSpec Int
+  emptySpec = emptyNumSpec
+  combineSpec = combineNumSpec
+  genFromTypeSpec = genFromNumSpec
+  shrinkWithTypeSpec = shrinkWithNumSpec
+  conformsTo = conformsToNumSpec
+  toPreds = toPredsNumSpec
+  cardinalTypeSpec = cardinalNumSpec
+  guardTypeSpec = guardNumSpec
+
+
 instance
   Logic NumOrdW
   where
@@ -436,31 +442,30 @@ instance
   propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
   propagate _ _ TrueSpec = TrueSpec
   propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
-  -- propagate (Context GreaterW (HOLE :<> x :<| End)) spec =
-  --   propagate (Context LessW (x :|> HOLE :<> End)) spec
-  -- propagate (Context GreaterW (x :|> HOLE :<> End)) spec =
-  --   propagate (Context LessW (HOLE :<> x :<| End)) spec
-  -- propagate (Context LessOrEqualW (HOLE :<> x :<| End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App LessOrEqualW (v' :> Lit x :> Nil)) (v :-> ps)
-  -- propagate (Context LessOrEqualW (x :|> HOLE :<> End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App LessOrEqualW (Lit x :> v' :> Nil)) (v :-> ps)
-  -- propagate (Context LessOrEqualW (HOLE :<> l :<| End)) spec =
-  --   caseBoolSpec spec $ \case True -> leqSpec l; False -> gtSpec l
-  -- propagate (Context LessOrEqualW (l :|> HOLE :<> End)) spec =
-  --   caseBoolSpec spec $ \case True -> geqSpec l; False -> ltSpec l
-  -- propagate (Context GreaterOrEqualW (HOLE :<> x :<| End)) spec =
-  --   propagate (Context LessOrEqualW (x :|> HOLE :<> End)) spec
-  -- propagate (Context GreaterOrEqualW (x :|> HOLE :<> End)) spec =
-  --   propagate (Context LessOrEqualW (HOLE :<> x :<| End)) spec
-  -- propagate (Context LessW (HOLE :<> x :<| End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App LessW (v' :> Lit x :> Nil)) (v :-> ps)
-  -- propagate (Context LessW (x :|> HOLE :<> End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App LessW (Lit x :> v' :> Nil)) (v :-> ps)
-  -- propagate (Context LessW (HOLE :<> l :<| End)) spec =
-  --   caseBoolSpec spec $ \case True -> ltSpec l; False -> geqSpec l
-  -- propagate (Context LessW (l :|> HOLE :<> End)) spec =
-  --   caseBoolSpec spec $ \case True -> gtSpec l; False -> leqSpec l
-  propagate _ _ _ = error "TODO"
+  propagate GreaterW (HOLE :? x :> Nil) spec =
+    propagate LessW (x :! NilCtx HOLE) spec
+  propagate GreaterW (x :! NilCtx HOLE) spec =
+    propagate LessW (HOLE :? x :> Nil) spec
+  propagate LessOrEqualW (HOLE :? Value x :> Nil) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App LessOrEqualW (v' :> Lit x :> Nil)) (v :-> ps)
+  propagate LessOrEqualW (Value x :! NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App LessOrEqualW (Lit x :> v' :> Nil)) (v :-> ps)
+  propagate LessOrEqualW (HOLE :? Value l :> Nil) spec =
+    caseBoolSpec spec $ \case True -> leqSpec l; False -> gtSpec l
+  propagate LessOrEqualW (Value l :! NilCtx HOLE) spec =
+    caseBoolSpec spec $ \case True -> geqSpec l; False -> ltSpec l
+  propagate GreaterOrEqualW (HOLE :? Value x :> Nil) spec =
+    propagate LessOrEqualW (Value x :! NilCtx HOLE) spec
+  propagate GreaterOrEqualW (x :! NilCtx HOLE) spec =
+    propagate LessOrEqualW (HOLE :? x :> Nil) spec
+  propagate LessW (HOLE :? Value x :> Nil) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App LessW (v' :> Lit x :> Nil)) (v :-> ps)
+  propagate LessW (Value x :! NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App LessW (Lit x :> v' :> Nil)) (v :-> ps)
+  propagate LessW (HOLE :? Value l :> Nil) spec =
+    caseBoolSpec spec $ \case True -> ltSpec l; False -> geqSpec l
+  propagate LessW (Value l :! NilCtx HOLE) spec =
+    caseBoolSpec spec $ \case True -> gtSpec l; False -> leqSpec l
 
 infixr 4 <=.
 (<=.) :: forall a. OrdLike a => Term a -> Term a -> Term Bool
@@ -1465,53 +1470,50 @@ instance Logic ProdW where
   propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
   propagate _ _ TrueSpec = TrueSpec
   propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
-  -- propagate (Context ProdFstW (HOLE :<> End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App ProdFstW (v' :> Nil)) (v :-> ps)
-  -- propagate (Context ProdFstW (HOLE :<> End)) (TypeSpec ts cant) =
-  --   cartesian (TypeSpec ts cant) TrueSpec
-  -- propagate (Context ProdFstW (HOLE :<> End)) (MemberSpec es) =
-  --   cartesian (MemberSpec es) TrueSpec
-  -- propagate (Context ProdSndW (HOLE :<> End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App ProdSndW (v' :> Nil)) (v :-> ps)
-  -- propagate (Context ProdSndW (HOLE :<> End)) (TypeSpec ts cant) =
-  --   cartesian TrueSpec (TypeSpec ts cant)
-  -- propagate (Context ProdSndW (HOLE :<> End)) (MemberSpec es) =
-  --   cartesian TrueSpec (MemberSpec es)
-  -- propagate (Context ProdW (HOLE :<> x :<| End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App ProdW (v' :> Lit x :> Nil)) (v :-> ps)
-  -- propagate (Context ProdW (x :|> HOLE :<> End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App ProdW (Lit x :> v' :> Nil)) (v :-> ps)
-  -- propagate (Context ProdW (a :|> HOLE :<> End)) ts@(TypeSpec (Cartesian sa sb) cant)
-  --   | a `conformsToSpec` sa = sb <> foldMap notEqualSpec (sameFst a cant)
-  --   | otherwise =
-  --       ErrorSpec
-  --         (NE.fromList ["propagate (pair_ " ++ show a ++ " HOLE) has conformance failure on a", show ts])
-  -- propagate (Context ProdW (HOLE :<> b :<| End)) ts@(TypeSpec (Cartesian sa sb) cant)
-  --   | b `conformsToSpec` sb = sa <> foldMap notEqualSpec (sameSnd b cant)
-  --   | otherwise =
-  --       ErrorSpec
-  --         (NE.fromList ["propagate (pair_ HOLE " ++ show b ++ ") has conformance failure on b", show ts])
-  -- propagate (Context ProdW (a :|> HOLE :<> End)) (MemberSpec es) =
-  --   case (nub (sameFst a (NE.toList es))) of
-  --     (w : ws) -> MemberSpec (w :| ws)
-  --     [] ->
-  --       ErrorSpec $
-  --         NE.fromList
-  --           [ "propagate (pair_ HOLE " ++ show a ++ ") on (MemberSpec " ++ show (NE.toList es)
-  --           , "Where " ++ show a ++ " does not appear as the fst component of anything in the MemberSpec."
-  --           ]
-  -- propagate (Context ProdW (HOLE :<> b :<| End)) (MemberSpec es) =
-  --   case (nub (sameSnd b (NE.toList es))) of
-  --     (w : ws) -> MemberSpec (w :| ws)
-  --     [] ->
-  --       ErrorSpec $
-  --         NE.fromList
-  --           [ "propagate (pair_ HOLE " ++ show b ++ ") on (MemberSpec " ++ show (NE.toList es)
-  --           , "Where " ++ show b ++ " does not appear as the snd component of anything in the MemberSpec."
-  --           ]
-  -- propagate ctx _ =
-  --   ErrorSpec $ pure ("Logic instance for ProdFstW with wrong number of arguments. " ++ show ctx)
-  propagate _ _ _ = error "TODO"
+  propagate ProdFstW (NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App ProdFstW (v' :> Nil)) (v :-> ps)
+  propagate ProdFstW (NilCtx HOLE) (TypeSpec ts cant) =
+    cartesian (TypeSpec ts cant) TrueSpec
+  propagate ProdFstW (NilCtx HOLE) (MemberSpec es) =
+    cartesian (MemberSpec es) TrueSpec
+  propagate ProdSndW (NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App ProdSndW (v' :> Nil)) (v :-> ps)
+  propagate ProdSndW (NilCtx HOLE) (TypeSpec ts cant) =
+    cartesian TrueSpec (TypeSpec ts cant)
+  propagate ProdSndW (NilCtx HOLE) (MemberSpec es) =
+    cartesian TrueSpec (MemberSpec es)
+  propagate ProdW (HOLE :? Value x :> Nil) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App ProdW (v' :> Lit x :> Nil)) (v :-> ps)
+  propagate ProdW (Value x :! NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App ProdW (Lit x :> v' :> Nil)) (v :-> ps)
+  propagate ProdW (Value a :! NilCtx HOLE) ts@(TypeSpec (Cartesian sa sb) cant)
+    | a `conformsToSpec` sa = sb <> foldMap notEqualSpec (sameFst a cant)
+    | otherwise =
+        ErrorSpec
+          (NE.fromList ["propagate (pair_ " ++ show a ++ " HOLE) has conformance failure on a", show ts])
+  propagate ProdW (HOLE :? Value b :> Nil) ts@(TypeSpec (Cartesian sa sb) cant)
+    | b `conformsToSpec` sb = sa <> foldMap notEqualSpec (sameSnd b cant)
+    | otherwise =
+        ErrorSpec
+          (NE.fromList ["propagate (pair_ HOLE " ++ show b ++ ") has conformance failure on b", show ts])
+  propagate ProdW (Value a :! NilCtx HOLE) (MemberSpec es) =
+    case (nub (sameFst a (NE.toList es))) of
+      (w : ws) -> MemberSpec (w :| ws)
+      [] ->
+        ErrorSpec $
+          NE.fromList
+            [ "propagate (pair_ HOLE " ++ show a ++ ") on (MemberSpec " ++ show (NE.toList es)
+            , "Where " ++ show a ++ " does not appear as the fst component of anything in the MemberSpec."
+            ]
+  propagate ProdW (HOLE :? Value b :> Nil) (MemberSpec es) =
+    case (nub (sameSnd b (NE.toList es))) of
+      (w : ws) -> MemberSpec (w :| ws)
+      [] ->
+        ErrorSpec $
+          NE.fromList
+            [ "propagate (pair_ HOLE " ++ show b ++ ") on (MemberSpec " ++ show (NE.toList es)
+            , "Where " ++ show b ++ " does not appear as the snd component of anything in the MemberSpec."
+            ]
 
   rewriteRules ProdFstW ((pairView -> Just (x, _)) :> Nil) Evidence = Just x
   rewriteRules ProdSndW ((pairView -> Just (_, y)) :> Nil) Evidence = Just y

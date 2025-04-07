@@ -725,17 +725,17 @@ instance Logic IntW where
   propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
   -- propagate AddW (HOLE :<> x :<| End)) (SuspendedSpec v ps) =
   --   constrained $ \v' -> Let (App AddW (v' :> Lit x :> Nil)) (v :-> ps)
-  -- propagate (Context AddW (x :|> HOLE :<> End)) (SuspendedSpec v ps) =
+  -- propagate (Context AddW (x :|> NilCtx HOLE)) (SuspendedSpec v ps) =
   --   constrained $ \v' -> Let (App AddW (Lit x :> v' :> Nil)) (v :-> ps)
-  -- propagate (Context AddW (i :|> HOLE :<> End)) spec =
+  -- propagate (Context AddW (i :|> NilCtx HOLE)) spec =
   --   propagate (Context AddW (HOLE :<> i :<| End)) spec
   -- propagate (Context AddW (HOLE :<> i :<| End)) (TypeSpec ts cant) =
   --   subtractSpec i ts <> notMemberSpec (mapMaybe (safeSubtract i) cant)
-  -- propagate (Context NegateW (HOLE :<> End)) (SuspendedSpec v ps) =
+  -- propagate (Context NegateW (NilCtx HOLE)) (SuspendedSpec v ps) =
   --   constrained $ \v' -> Let (App NegateW (v' :> Nil)) (v :-> ps)
-  -- propagate (Context NegateW (HOLE :<> End)) (TypeSpec ts cant) =
+  -- propagate (Context NegateW (NilCtx HOLE)) (TypeSpec ts cant) =
   --   negateSpec ts <> notMemberSpec (map negate cant)
-  -- propagate (Context NegateW (HOLE :<> End)) (MemberSpec es) =
+  -- propagate (Context NegateW (NilCtx HOLE)) (MemberSpec es) =
   --   MemberSpec $ NE.nub $ fmap negate es
   -- propagate (Context AddW (HOLE :<> i :<| End)) (MemberSpec es) =
   --   memberSpecList

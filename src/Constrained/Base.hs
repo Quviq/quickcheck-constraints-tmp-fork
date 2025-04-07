@@ -105,7 +105,8 @@ type LogicRequires t =
 class LogicRequires t => Logic t where
   {-# MINIMAL (propagate) #-}
 
-  propagate :: t as b
+  propagate :: (All HasSpec as, HasSpec b)
+            => t as b
             -> ListCtx Value as (HOLE a)
             -> Specification b -> Specification a
 
@@ -499,14 +500,14 @@ instance Logic BaseW where
   propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
   propagate _ _ TrueSpec = TrueSpec
   propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
-  -- propagate ToGenericW (HOLE :<> End) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App ToGenericW (v' :> Nil)) (v :-> ps)
-  -- propagate (Context ToGenericW (HOLE :<> End)) (TypeSpec s cant) = TypeSpec s (fromSimpleRep <$> cant)
-  -- propagate (Context ToGenericW (HOLE :<> End)) (MemberSpec es) = MemberSpec (fmap fromSimpleRep es)
-  -- propagate (Context FromGenericW (HOLE :<> End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App FromGenericW (v' :> Nil)) (v :-> ps)
-  -- propagate (Context FromGenericW (HOLE :<> End)) (TypeSpec s cant) = TypeSpec s (toSimpleRep <$> cant)
-  -- propagate (Context FromGenericW (HOLE :<> End)) (MemberSpec es) = MemberSpec (fmap toSimpleRep es)
+  propagate ToGenericW (NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App ToGenericW (v' :> Nil)) (v :-> ps)
+  propagate ToGenericW (NilCtx HOLE) (TypeSpec s cant) = TypeSpec s (fromSimpleRep <$> cant)
+  propagate ToGenericW (NilCtx HOLE) (MemberSpec es) = MemberSpec (fmap fromSimpleRep es)
+  propagate FromGenericW (NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App FromGenericW (v' :> Nil)) (v :-> ps)
+  propagate FromGenericW (NilCtx HOLE) (TypeSpec s cant) = TypeSpec s (toSimpleRep <$> cant)
+  propagate FromGenericW (NilCtx HOLE) (MemberSpec es) = MemberSpec (fmap toSimpleRep es)
   propagate _ _ _ = error "TODO"
 
   mapTypeSpec ToGenericW ts = typeSpec ts
