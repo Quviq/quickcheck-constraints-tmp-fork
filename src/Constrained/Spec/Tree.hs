@@ -20,10 +20,9 @@ import Constrained.Conformance (conformsToSpec, satisfies)
 import Constrained.Core (unionWithMaybe)
 import Constrained.GenT (oneofT)
 import Constrained.List
-import Constrained.Spec.ListFoldy (FoldSpec (..), ListSpec (..))
-import Constrained.Spec.SumProd (PairSpec (Cartesian), match)
+import Constrained.Spec.SumProd (match)
 import Constrained.Syntax (forAll, genHint)
-import Constrained.TheKnot (genFromSpecT, shrinkWithSpec)
+import Constrained.TheKnot
 import Data.Kind
 import Data.Tree
 import GHC.Generics

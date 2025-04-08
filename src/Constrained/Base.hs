@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE TypeAbstractions #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DefaultSignatures #-}
@@ -37,7 +38,6 @@
 module Constrained.Base where
 
 import Constrained.Generic
-
 import Constrained.Core (Evidence (..), Var (..), Value(..), eqVar)
 import Constrained.GenT (
   GE (..),
@@ -55,7 +55,7 @@ import qualified Data.List.NonEmpty as NE
 import Data.Orphans ()
 import Data.Semigroup (Max (..), getMax)
 import Data.String (fromString)
-import Data.Typeable (Proxy (..), Typeable, eqT, typeRep, (:~:) (Refl))
+import Data.Typeable
 import GHC.Stack
 import Prettyprinter hiding (cat)
 import Test.QuickCheck hiding (Args, Fun, Witness, forAll, witness)
@@ -230,13 +230,8 @@ sameFunSym x y = do
 
 -- | Here we only care about the Type 't' and the Symbol 's'
 --   the dom, and the rng can be anything.
-sameWitness ::
-  forall t d r t' d' r'.
-  (Typeable t', Logic t) =>
-  (t' :: FSType) d' r' -> t d r -> Maybe (t' d r, t :~: t')
-sameWitness _x y = case eqT @t' @t of
-  Just m@Refl -> Just (y, m)
-  _ -> Nothing
+getWitness :: forall t t' d r. (AppRequires t d r, Typeable t') => t d r -> Maybe (t' d r)
+getWitness = cast
 
 -- ========================================================
 -- A Specification tells us what constraints must hold
@@ -1124,7 +1119,7 @@ pattern FromGeneric ::
   (rng ~ a, GenericRequires a, HasSpec a, AppRequires BaseW '[SimpleRep a] rng) =>
   Term (SimpleRep a) -> Term rng
 pattern FromGeneric x <-
-  (App (sameWitness (FromGenericW @()) -> Just (FromGenericW, Refl)) (x :> Nil))
+  (App (getWitness -> Just FromGenericW) (x :> Nil))
 
 pattern ToGeneric ::
   forall rng.
@@ -1132,4 +1127,4 @@ pattern ToGeneric ::
   forall a.
   (rng ~ SimpleRep a, GenericRequires a, HasSpec a, AppRequires BaseW '[a] rng) =>
   Term a -> Term rng
-pattern ToGeneric x <- (App (sameWitness (ToGenericW @()) -> Just (ToGenericW, Refl)) (x :> Nil))
+pattern ToGeneric x <- (App (getWitness -> Just ToGenericW) (x :> Nil))

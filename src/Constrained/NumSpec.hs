@@ -30,9 +30,10 @@
 
 module Constrained.NumSpec where
 
+import Constrained.List
 import Constrained.Base
 import Constrained.Conformance ()
-import Constrained.Core (NonEmpty ((:|)), unionWithMaybe)
+import Constrained.Core
 import Constrained.GenT (GenT, MonadGenError (..), pureGen, sizeT)
 import Constrained.Generic
 import Control.Applicative ((<|>))
@@ -40,7 +41,7 @@ import Control.Arrow (first)
 import Data.Kind
 import Data.List (nub)
 import qualified Data.List.NonEmpty as NE
-import Data.Maybe (fromJust)
+import Data.Maybe
 import qualified Data.Set as Set
 import Data.Typeable (typeOf)
 import Data.Word
@@ -723,30 +724,29 @@ instance Logic IntW where
   propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
   propagate _ _ TrueSpec = TrueSpec
   propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
-  -- propagate AddW (HOLE :<> x :<| End)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App AddW (v' :> Lit x :> Nil)) (v :-> ps)
-  -- propagate (Context AddW (x :|> NilCtx HOLE)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App AddW (Lit x :> v' :> Nil)) (v :-> ps)
-  -- propagate (Context AddW (i :|> NilCtx HOLE)) spec =
-  --   propagate (Context AddW (HOLE :<> i :<| End)) spec
-  -- propagate (Context AddW (HOLE :<> i :<| End)) (TypeSpec ts cant) =
-  --   subtractSpec i ts <> notMemberSpec (mapMaybe (safeSubtract i) cant)
-  -- propagate (Context NegateW (NilCtx HOLE)) (SuspendedSpec v ps) =
-  --   constrained $ \v' -> Let (App NegateW (v' :> Nil)) (v :-> ps)
-  -- propagate (Context NegateW (NilCtx HOLE)) (TypeSpec ts cant) =
-  --   negateSpec ts <> notMemberSpec (map negate cant)
-  -- propagate (Context NegateW (NilCtx HOLE)) (MemberSpec es) =
-  --   MemberSpec $ NE.nub $ fmap negate es
-  -- propagate (Context AddW (HOLE :<> i :<| End)) (MemberSpec es) =
-  --   memberSpecList
-  --     (nub $ mapMaybe (safeSubtract i) (NE.toList es))
-  --     ( NE.fromList
-  --         [ "propagateSpecFn on (" ++ show i ++ " +. HOLE)"
-  --         , "The Spec is a MemberSpec = " ++ show (MemberSpec es)
-  --         , "We can't safely subtract " ++ show i ++ " from any choice in the MemberSpec."
-  --         ]
-  --     )
-  propagate _ _ _ = undefined
+  propagate AddW (HOLE :? Value x :> Nil) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App AddW (v' :> Lit x :> Nil)) (v :-> ps)
+  propagate AddW (Value x :! NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App AddW (Lit x :> v' :> Nil)) (v :-> ps)
+  propagate AddW (i :! NilCtx HOLE) spec =
+    propagate AddW (HOLE :? i :> Nil) spec
+  propagate AddW (HOLE :? Value i :> Nil) (TypeSpec ts cant) =
+    subtractSpec i ts <> notMemberSpec (mapMaybe (safeSubtract i) cant)
+  propagate NegateW (NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App NegateW (v' :> Nil)) (v :-> ps)
+  propagate NegateW (NilCtx HOLE) (TypeSpec ts cant) =
+    negateSpec ts <> notMemberSpec (map negate cant)
+  propagate NegateW (NilCtx HOLE) (MemberSpec es) =
+    MemberSpec $ NE.nub $ fmap negate es
+  propagate AddW (HOLE :? Value i :> Nil) (MemberSpec es) =
+    memberSpecList
+      (nub $ mapMaybe (safeSubtract i) (NE.toList es))
+      ( NE.fromList
+          [ "propagateSpecFn on (" ++ show i ++ " +. HOLE)"
+          , "The Spec is a MemberSpec = " ++ show (MemberSpec es)
+          , "We can't safely subtract " ++ show i ++ " from any choice in the MemberSpec."
+          ]
+      )
 
 addFn :: forall a. NumLike a => Term a -> Term a -> Term a
 addFn = appTerm AddW

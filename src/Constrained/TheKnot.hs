@@ -28,7 +28,7 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
-{-# OPTIONS_GHC -Wno-orphans #-}
+{-# OPTIONS_GHC -Wno-orphans -Wno-name-shadowing #-}
 
 -- | All the things that are mutually recursive.
 module Constrained.TheKnot where
@@ -49,9 +49,10 @@ import Control.Monad
 import Control.Monad.Writer (Writer, runWriter, tell)
 import Data.Foldable
 import Data.Kind
-import Data.List (nub, partition)
+import Data.List (nub, partition, (\\))
 import qualified Data.List.NonEmpty as NE
 import Data.Maybe
+import Control.Applicative
 import Data.Semigroup (Any (..), getSum)
 import qualified Data.Semigroup as Semigroup
 import Data.Set (Set)
@@ -65,6 +66,14 @@ import Test.QuickCheck hiding (Args, Fun, Witness, forAll, witness)
 import Test.QuickCheck.Gen
 import Test.QuickCheck.Random hiding (left, right)
 import Prelude hiding (cycle, pred)
+
+import Constrained.SumList (Cost (..), Solution (No, Yes), pickAll)
+import Data.Int
+import Data.List (isPrefixOf, isSuffixOf)
+import System.Random (Random)
+
+import Data.Ratio
+import Data.Word
 
 -- ===================================================================================
 -- We call this module TheKnot because it binds a mutually recursive set of things
@@ -380,7 +389,7 @@ instance Logic EqW where
 
   saturate EqualW (FromGeneric (InjLeft _) :> t :> Nil) = [toPreds t (SumSpec Nothing TrueSpec (ErrorSpec (pure "saturatePred")))]
   saturate EqualW (FromGeneric (InjRight _) :> t :> Nil) = [toPreds t (SumSpec Nothing (ErrorSpec (pure "saturatePred")) TrueSpec)]
-  saturate _ _ = error "TODO"
+  saturate _ _ = []
 
 infix 4 ==.
 (==.) :: HasSpec a => Term a -> Term a -> Term Bool
@@ -394,7 +403,7 @@ pattern Equal ::
   Term a -> Term a -> Term b
 pattern Equal x y <-
   ( App
-      (sameWitness (EqualW @Int) -> Just (EqualW, Refl))
+      (getWitness -> Just EqualW)
       (x :> y :> Nil)
     )
 
@@ -1618,7 +1627,7 @@ pattern Product ::
   , AppRequires ProdW '[a, b] (Prod a b)
   ) =>
   Term a -> Term b -> Term c
-pattern Product x y <- (App (sameWitness (ProdW @_ @_) -> Just (ProdW, Refl)) (x :> y :> Nil))
+pattern Product x y <- (App (getWitness -> Just ProdW) (x :> y :> Nil))
 
 -- ==================================================================
 -- The HasSpec instance for Sum is in TheKnot.
@@ -1688,7 +1697,7 @@ pattern InjRight ::
   , AppRequires SumW '[b] c
   ) =>
   Term b -> Term c
-pattern InjRight x <- (App (sameWitness (InjRightW @_ @_) -> Just (InjRightW, Refl)) (x :> Nil))
+pattern InjRight x <- (App (getWitness -> Just InjRightW) (x :> Nil))
 
 pattern InjLeft ::
   forall c.
@@ -1698,7 +1707,7 @@ pattern InjLeft ::
   , AppRequires SumW '[a] c
   ) =>
   Term a -> Term c
-pattern InjLeft x <- App (sameWitness (InjLeftW @a @b) -> Just (InjLeftW, Refl)) (x :> Nil)
+pattern InjLeft x <- App (getWitness -> Just InjLeftW) (x :> Nil)
 
 data ElemW :: FSType where
   ElemW :: HasSpec a => ElemW '[a, [a]] Bool
@@ -1707,6 +1716,11 @@ deriving instance Eq (ElemW dom rng)
 
 instance Show (ElemW dom rng) where
   show ElemW = "elem_"
+
+instance Syntax ElemW
+
+instance Semantics ElemW where
+  semantics ElemW = elem
 
 instance Logic ElemW where
   propagate f ctxt (ExplainSpec [] s) = propagate f ctxt s
@@ -1730,9 +1744,9 @@ instance Logic ElemW where
   rewriteRules ElemW (t :> Lit [a] :> Nil) Evidence = Just $ t ==. (Lit a)
   rewriteRules _ _ _ = Nothing
 
-  saturate ElemW (FromGeneric (Product (x :: Term m) (y :: Term n)) :> Lit zs :> Nil) = case zs of
-        (w : ws) -> [ElemPred True x (fmap fst (w :| ws))]
-        [] -> [FalsePred (pure $ "empty list, zs , in elem_ " ++ show (x, y) ++ " zs")]
+  -- saturate ElemW (FromGeneric (Product (x :: Term m) (y :: Term n)) :> Lit zs :> Nil) = case zs of
+  --       (w : ws) -> [ElemPred True x (fmap fst (w :| ws))]
+  --       [] -> [FalsePred (pure $ "empty list, zs , in elem_ " ++ show (x, y) ++ " zs")]
   saturate ElemW (x :> Lit (y : ys) :> Nil) = [satisfies x (MemberSpec (y :| ys))]
   saturate _ _ = []
 
@@ -1744,6 +1758,1413 @@ pattern Elem ::
   Term a -> Term [a] -> Term b
 pattern Elem x y <-
   ( App
-      (sameWitness (ElemW @()) -> Just (ElemW, Refl))
+      (getWitness -> Just ElemW)
       (x :> y :> Nil)
     )
+
+-- ================================================================
+-- The TypeSpec for List. Used in the HasSpec instance for Lists
+-- ================================================================
+
+data ListSpec a = ListSpec
+  { listSpecHint :: Maybe Integer
+  , listSpecMust :: [a]
+  , listSpecSize :: Specification Integer
+  , listSpecElem :: Specification a
+  , listSpecFold :: FoldSpec a
+  }
+
+instance
+  ( Arbitrary a
+  , Arbitrary (FoldSpec a)
+  , Arbitrary (TypeSpec a)
+  , HasSpec a
+  ) =>
+  Arbitrary (ListSpec a)
+  where
+  arbitrary = ListSpec <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+  shrink (ListSpec a b c d e) = [ListSpec a' b' c' d' e' | (a', b', c', d', e') <- shrink (a, b, c, d, e)]
+
+instance HasSpec a => Show (FoldSpec a) where
+  showsPrec d = shows . prettyPrec d
+
+instance HasSpec a => Pretty (WithPrec (FoldSpec a)) where
+  pretty (WithPrec _ NoFold) = "NoFold"
+  pretty (WithPrec d (FoldSpec fun s)) =
+    parensIf (d > 10) $
+      "FoldSpec"
+        /> vsep'
+          [ "fn   =" <+> viaShow fun
+          , "spec =" <+> pretty s
+          ]
+
+instance HasSpec a => Pretty (FoldSpec a) where
+  pretty = prettyPrec 0
+
+instance HasSpec a => Show (ListSpec a) where
+  showsPrec d = shows . prettyPrec d
+
+instance
+  HasSpec a =>
+  Pretty (WithPrec (ListSpec a))
+  where
+  pretty (WithPrec d s) =
+    parensIf (d > 10) $
+      "ListSpec"
+        /> vsep'
+          [ "hint =" <+> viaShow (listSpecHint s)
+          , "must =" <+> viaShow (listSpecMust s)
+          , "size =" <+> pretty (listSpecSize s)
+          , "elem =" <+> pretty (listSpecElem s)
+          , "fold =" <+> pretty (listSpecFold s)
+          ]
+
+instance HasSpec a => Pretty (ListSpec a) where
+  pretty = prettyPrec 0
+
+guardListSpec :: HasSpec a => [String] -> ListSpec a -> Specification [a]
+guardListSpec msg l@(ListSpec _hint must size elemS _fold)
+  | ErrorSpec es <- size = ErrorSpec $ (NE.fromList ("Error in size of ListSpec" : msg)) <> es
+  | Just u <- knownUpperBound size
+  , u < 0 =
+      ErrorSpec $ NE.fromList (["Negative size in guardListSpec", show size] ++ msg)
+  | not (all (`conformsToSpec` elemS) must) =
+      ErrorSpec $
+        ( NE.fromList
+            (["Some items in the must list do not conform to 'element' spec.", "   " ++ show elemS] ++ msg)
+        )
+  | otherwise = (typeSpec l)
+
+instance (Sized [a], HasSpec a) => HasSpec [a] where
+  type TypeSpec [a] = ListSpec a
+  type Prerequisites [a] = HasSpec a
+  emptySpec = ListSpec Nothing [] mempty mempty NoFold
+  combineSpec l1@(ListSpec msz must size elemS foldS) l2@(ListSpec msz' must' size' elemS' foldS') =
+    let must'' = nub $ must <> must'
+        elemS'' = elemS <> elemS'
+        size'' = size <> size'
+        foldeither = combineFoldSpec foldS foldS'
+        msg = ["Error in combineSpec for ListSpec", "1) " ++ show l1, "2) " ++ show l2]
+     in case foldeither of
+          Left foldmsg -> ErrorSpec (NE.fromList (msg ++ foldmsg))
+          Right fold'' -> guardListSpec msg $ ListSpec (unionWithMaybe min msz msz') must'' size'' elemS'' fold''
+
+  genFromTypeSpec (ListSpec _ must _ elemS _)
+    | any (not . (`conformsToSpec` elemS)) must =
+        genError1 "genTypeSpecSpec @ListSpec: some elements of mustSet do not conform to elemS"
+  genFromTypeSpec (ListSpec msz must TrueSpec elemS NoFold) = do
+    lst <- case msz of
+      Nothing -> listOfT $ genFromSpecT elemS
+      Just szHint -> do
+        sz <- genFromSizeSpec (leqSpec szHint)
+        listOfUntilLenT (genFromSpecT elemS) (fromIntegral sz) (const True)
+    pureGen $ shuffle (must ++ lst)
+  genFromTypeSpec (ListSpec msz must szSpec elemS NoFold) = do
+    sz0 <- genFromSizeSpec (szSpec <> geqSpec (sizeOf must) <> maybe TrueSpec (leqSpec . max 0) msz)
+    let sz = fromIntegral (sz0 - sizeOf must)
+    lst <-
+      listOfUntilLenT
+        (genFromSpecT elemS)
+        sz
+        ((`conformsToSpec` szSpec) . (+ sizeOf must) . fromIntegral)
+    pureGen $ shuffle (must ++ lst)
+  genFromTypeSpec (ListSpec msz must szSpec elemS (FoldSpec f foldS)) = do
+    let szSpec' = szSpec <> maybe TrueSpec (leqSpec . max 0) msz
+    genFromFold must szSpec' elemS f foldS
+
+  shrinkWithTypeSpec (ListSpec _ _ _ es _) as =
+    shrinkList (shrinkWithSpec es) as
+
+  cardinalTypeSpec _ = TrueSpec
+
+  guardTypeSpec = guardListSpec
+
+  conformsTo xs (ListSpec _ must size elemS foldS) =
+    sizeOf xs `conformsToSpec` size
+      && all (`elem` xs) must
+      && all (`conformsToSpec` elemS) xs
+      && xs `conformsToFoldSpec` foldS
+
+  toPreds x (ListSpec msz must size elemS foldS) =
+    (forAll x $ \x' -> satisfies x' elemS)
+      <> (forAll (Lit must) $ \x' -> Assert (elem_ x' x))
+      <> toPredsFoldSpec x foldS
+      <> satisfies (sizeOf_ x) size
+      <> maybe TruePred (flip genHint x) msz
+
+sizeOf_ :: (HasSpec a, Sized a) => Term a -> Term Integer
+sizeOf_ = curryList (App SizeOfW)
+
+-- | Because Sizes should always be >= 0, We provide this alternate generator
+--   that can be used to replace (genFromSpecT @Integer), to ensure this important property
+genFromSizeSpec :: MonadGenError m => Specification Integer -> GenT m Integer
+genFromSizeSpec integerSpec = genFromSpecT (integerSpec <> geqSpec 0)
+
+instance (Sized [a], HasSpec a) => HasGenHint [a] where
+  type Hint [a] = Integer
+  giveHint szHint = typeSpec $ ListSpec (Just szHint) [] mempty mempty NoFold
+
+instance Forallable [a] a where
+  fromForAllSpec es = typeSpec (ListSpec Nothing [] mempty es NoFold)
+  forAllToList = id
+
+data FoldSpec a where
+  NoFold :: FoldSpec a
+  FoldSpec ::
+    forall b a.
+    ( HasSpec a
+    , HasSpec b
+    , Foldy b
+    ) =>
+    Fun '[a] b -> Specification b -> FoldSpec a
+
+preMapFoldSpec :: HasSpec a => Fun '[a] b -> FoldSpec b -> FoldSpec a
+preMapFoldSpec _ NoFold = NoFold
+preMapFoldSpec f (FoldSpec g s) = FoldSpec (composeFn g f) s
+
+composeFn :: (HasSpec b, HasSpec c) => Fun '[b] c -> Fun '[a] b -> Fun '[a] c
+composeFn (Fun f) (Fun g) = (Fun (ComposeW f g))
+
+idFn :: HasSpec a => Fun '[a] a
+idFn = Fun IdW
+
+combineFoldSpec :: FoldSpec a -> FoldSpec a -> Either [String] (FoldSpec a)
+combineFoldSpec NoFold s = pure s
+combineFoldSpec s NoFold = pure s
+combineFoldSpec (FoldSpec (Fun f) s) (FoldSpec (Fun g) s') =
+  case sameFunSym f g of
+    Just (_h, Refl, Refl, Refl) -> pure $ FoldSpec (Fun f) (s <> s')
+    Nothing -> Left ["Can't combine fold specs on different functions", "  " ++ show f, "  " ++ show g]
+
+conformsToFoldSpec :: forall a. [a] -> FoldSpec a -> Bool
+conformsToFoldSpec _ NoFold = True
+conformsToFoldSpec xs (FoldSpec (Fun f) s) = adds (map (semantics f) xs) `conformsToSpec` s
+
+class (HasSpec a, NumLike a, Logic IntW) => Foldy a where
+  genList ::
+    MonadGenError m => Specification a -> Specification a -> GenT m [a]
+  theAddFn :: IntW '[a, a] a
+  theAddFn = AddW
+  theZero :: a
+  theZero = 0
+  genSizedList ::
+    MonadGenError m =>
+    Specification Integer -> Specification a -> Specification a -> GenT m [a]
+  noNegativeValues :: Bool
+
+-- ================
+-- Sized
+-- ================
+
+type SizeSpec = NumSpec Integer
+
+class Sized t where
+  sizeOf :: t -> Integer
+  default sizeOf :: (HasSimpleRep t, Sized (SimpleRep t)) => t -> Integer
+  sizeOf = sizeOf . toSimpleRep
+
+  liftSizeSpec :: HasSpec t => SizeSpec -> [Integer] -> Specification t
+  default liftSizeSpec ::
+    ( HasSpec t
+    , HasSimpleRep t
+    , Sized (SimpleRep t)
+    , HasSpec (SimpleRep t)
+    , TypeSpec t ~ TypeSpec (SimpleRep t)
+    ) =>
+    SizeSpec -> [Integer] -> Specification t
+  liftSizeSpec sz cant = fromSimpleRepSpec $ liftSizeSpec sz cant
+
+  liftMemberSpec :: HasSpec t => [Integer] -> Specification t
+  default liftMemberSpec ::
+    ( HasSpec t
+    , HasSpec (SimpleRep t)
+    , HasSimpleRep t
+    , Sized (SimpleRep t)
+    , TypeSpec t ~ TypeSpec (SimpleRep t)
+    ) =>
+    [Integer] -> Specification t
+  liftMemberSpec = fromSimpleRepSpec . liftMemberSpec
+
+  sizeOfTypeSpec :: HasSpec t => TypeSpec t -> Specification Integer
+  default sizeOfTypeSpec ::
+    ( HasSpec (SimpleRep t)
+    , Sized (SimpleRep t)
+    , TypeSpec t ~ TypeSpec (SimpleRep t)
+    ) =>
+    TypeSpec t -> Specification Integer
+  sizeOfTypeSpec = sizeOfTypeSpec @(SimpleRep t)
+
+adds :: Foldy a => [a] -> a
+adds = foldr (semantics theAddFn) theZero
+
+knownUpperBound ::
+  (TypeSpec a ~ NumSpec a, Ord a, Enum a, Num a, MaybeBounded a) =>
+  Specification a ->
+  Maybe a
+knownUpperBound (ExplainSpec _ s) = knownUpperBound s
+knownUpperBound TrueSpec = upperBound
+knownUpperBound (MemberSpec as) = Just $ maximum as
+knownUpperBound ErrorSpec {} = Nothing
+knownUpperBound SuspendedSpec {} = upperBound
+knownUpperBound (TypeSpec (NumSpecInterval lo hi) cant) = upper (lo <|> lowerBound) (hi <|> upperBound)
+  where
+    upper _ Nothing = Nothing
+    upper Nothing (Just b) = listToMaybe $ [b, b - 1 ..] \\ cant
+    upper (Just a) (Just b)
+      | a == b = a <$ guard (a `notElem` cant)
+      | otherwise = listToMaybe $ [b, b - 1 .. a] \\ cant
+
+
+-- =============================================================
+-- All Foldy class instances are over Numbers (so far).
+-- So that's why the Foldy class is in the NumberSpec module.
+-- Foldy class requires higher order functions, so here they are.
+-- Note this is a new witness type, different from BaseW
+-- but serving the same purpose. Note it can take Witnesses from
+-- other classes as inputs. See FlipW amd ComposeW
+-- ==============================================================
+
+-- We need Arbitrary Specification to do this
+instance {-# OVERLAPPABLE #-} (Arbitrary (Specification a {- Arbitrary (TypeSpec a), -}), Foldy a) => Arbitrary (FoldSpec a) where
+  arbitrary = oneof [FoldSpec (Fun IdW) <$> arbitrary, pure NoFold]
+  shrink NoFold = []
+  shrink (FoldSpec (Fun wit) spec)
+    | Just (idW, Refl, Refl, Refl) <- sameFunSym (IdW @a) wit = FoldSpec (Fun idW) <$> shrink spec
+  shrink FoldSpec {} = [NoFold]
+
+data FunW (dom :: [Type]) (rng :: Type) where
+  IdW :: forall a. FunW '[a] a
+  ComposeW ::
+    forall b t1 t2 a r.
+    ( AppRequires t1 '[b] r
+    , AppRequires t2 '[a] b
+    , HasSpec b
+    ) =>
+    t1 '[b] r -> t2 '[a] b -> FunW '[a] r
+  FlipW ::
+    forall t a b r.
+    AppRequires t '[a, b] r =>
+    t '[a, b] r -> FunW '[b, a] r
+
+funSem :: FunW dom rng -> FunTy dom rng
+funSem IdW = id
+funSem (ComposeW f g) = (\a -> semantics f (semantics g a))
+funSem (FlipW (f :: g d r)) = flip (semantics f)
+
+instance Semantics FunW where
+  semantics = funSem
+
+instance Syntax FunW
+
+instance Show (FunW dom rng) where
+  show IdW = "id_"
+  show (FlipW f) = "(flip_ " ++ show f ++ ")"
+  show (ComposeW x y) = "(compose_ " ++ show x ++ " " ++ show y ++ ")"
+
+instance Eq (FunW dom rng) where
+  IdW == IdW = True
+  FlipW t1 == FlipW t2 = compareWit t1 t2
+  ComposeW f f' == ComposeW g g' = compareWit f g && compareWit f' g'
+  _ == _ = False
+
+compareWit ::
+  forall t1 bs1 r1 t2 bs2 r2.
+  (AppRequires t1 bs1 r1, AppRequires t2 bs2 r2) =>
+  t1 bs1 r1 -> t2 bs2 r2 -> Bool
+compareWit x y = case (eqT @t1 @t2, eqT @bs1 @bs2, eqT @r1 @r2) of
+  (Just Refl, Just Refl, Just Refl) -> x == y
+  _ -> False
+
+-- ===================================
+-- Logic instances for IdW, FlipW and ComposeW
+-- Also their Haskell implementations id_ flip_ composeFn
+
+instance Logic FunW where
+  propagate f ctxt (ExplainSpec [] s) = propagate f ctxt s
+  propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
+  propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
+  propagate IdW (NilCtx HOLE) spec = spec
+  propagate (FlipW f) (HOLE :? Value v :> Nil) spec = propagate f (Value v :! NilCtx HOLE) spec
+  propagate (FlipW f) (Value v :! NilCtx HOLE) spec = propagate f (HOLE :? Value v :> Nil) spec
+  propagate (ComposeW (f :: t1' '[b'] r') (g :: t2' '[a'] b'')) (NilCtx HOLE) spec =
+    propagate g (NilCtx HOLE) $ propagate f (NilCtx HOLE) spec
+
+  mapTypeSpec IdW ts = typeSpec ts
+  mapTypeSpec (ComposeW g h) ts = mapSpec g . mapSpec h $ typeSpec ts
+
+  -- Note we need the Evidence to apply App to f, and to apply App to g
+  rewriteRules (ComposeW f g) (x :> Nil) Evidence = Just $ App f (App g (x :> Nil) :> Nil)
+  rewriteRules IdW (x :> Nil) Evidence = Just x
+  rewriteRules (FlipW f) (a@Lit {} :> b :> Nil) Evidence = Just $ App f (b :> a :> Nil)
+  rewriteRules (FlipW f) (a :> b@Lit {} :> Nil) Evidence = Just $ App f (b :> a :> Nil)
+  rewriteRules (FlipW {}) _ Evidence = Nothing
+
+id_ :: forall a. HasSpec a => Term a -> Term a
+id_ = appTerm IdW
+
+--   -- Note we need Evidence to apply App to f
+
+flip_ ::
+  forall (t :: FSType) a b r.
+  (HasSpec b, HasSpec a, AppRequires t '[a, b] r) =>
+  t '[a, b] r -> Term b -> Term a -> Term r
+flip_ x = appTerm (FlipW x)
+
+-- instance
+--   ( All Typeable [a, r]
+--   , HasSpec r
+--   ) =>
+--   Logic "composeFn" FunW '[a] r
+--   where
+--   propagate ctxt@(Context _ _) _ = ErrorSpec (NE.fromList ["ComposeW (composeFn)", "Unreachable context, too many args", show ctxt])
+
+
+compose_ ::
+  forall b t1 t2 a r.
+  ( AppRequires t1 '[b] r
+  , AppRequires t2 '[a] b
+  ) =>
+  t1 '[b] r -> t2 '[a] b -> Term a -> Term r
+compose_ f g = appTerm $ ComposeW f g -- @b @c1 @c2 @s1 @s2 @t1 @t2 @a @r f g
+
+-- =============================================================
+
+-- =======================================================
+-- All the Foldy class instances are intimately tied to
+-- Numbers. But that is not required, but this is a
+-- convenient place to put the code.
+-- =======================================================
+
+instance Foldy Integer where
+  noNegativeValues = False
+  genList = genNumList
+  genSizedList = genListWithSize
+
+instance Foldy Int where
+  noNegativeValues = False
+  genList = genNumList
+  genSizedList = genListWithSize
+
+instance Foldy Int8 where
+  noNegativeValues = False
+  genList = genNumList
+  genSizedList = genListWithSize
+
+instance Foldy Int16 where
+  noNegativeValues = False
+  genList = genNumList
+  genSizedList = genListWithSize
+
+instance Foldy Int32 where
+  noNegativeValues = False
+  genList = genNumList
+  genSizedList = genListWithSize
+
+instance Foldy Int64 where
+  noNegativeValues = False
+  genList = genNumList
+  genSizedList = genListWithSize
+
+instance Foldy Natural where
+  noNegativeValues = True
+  genList = genNumList
+  genSizedList = genListWithSize
+
+instance Foldy Word8 where
+  noNegativeValues = True
+  genList = genNumList
+  genSizedList = genListWithSize
+
+instance Foldy Word16 where
+  noNegativeValues = True
+  genList = genNumList
+  genSizedList = genListWithSize
+
+instance Foldy Word32 where
+  noNegativeValues = True
+  genList = genNumList
+  genSizedList = genListWithSize
+
+instance Foldy Word64 where
+  noNegativeValues = True
+  genList = genNumList
+  genSizedList = genListWithSize
+
+genInverse ::
+  ( MonadGenError m
+  , HasSpec a
+  , HasSpec b
+  ) =>
+  Fun '[a] b ->
+  Specification a ->
+  b ->
+  GenT m a
+genInverse (Fun f) argS x =
+  let argSpec' = argS <> propagate f (HOLE :? Nil) (equalSpec x)
+   in explain
+        ( NE.fromList
+            [ "genInverse"
+            , "  f = " ++ show f
+            , show $ "  argS =" <+> pretty argS
+            , "  x = " ++ show x
+            , show $ "  argSpec' =" <+> pretty argSpec'
+            ]
+        )
+        $ genFromSpecT argSpec'
+
+genFromFold ::
+  forall m a b.
+  ( MonadGenError m
+  , Foldy b
+  , HasSpec a
+  ) =>
+  [a] ->
+  Specification Integer ->
+  Specification a ->
+  Fun '[a] b ->
+  Specification b ->
+  GenT m [a]
+genFromFold must (simplifySpec -> size) elemS fun@(Fun fn) foldS
+  | isErrorLike size =
+      fatalError (NE.cons "genFromFold has ErrorLike sizeSpec" (errorLikeMessage size))
+  | isErrorLike elemS =
+      fatalError (NE.cons "genFromFold has ErrorLike elemSpec" (errorLikeMessage elemS))
+  | isErrorLike foldS =
+      fatalError (NE.cons "genFromFold has ErrorLike totalSpec" (errorLikeMessage foldS))
+  | otherwise = ( explain
+                    ( NE.fromList
+                        [ "while calling genFromFold"
+                        , "  must  = " ++ show must
+                        , "  size  = " ++ show size
+                        , "  elemS = " ++ show elemS
+                        , "  fun   = " ++ show fun
+                        , "  foldS = " ++ show foldS
+                        ]
+                    )
+                )
+      $ do
+        let elemS' :: Specification b
+            elemS' = mapSpec fn elemS
+            mustVal = adds (map (semantics fn) must)
+            foldS' :: Specification b
+            foldS' = propagate theAddFn (HOLE :? Value mustVal :> Nil) foldS
+            sizeSpec' :: Specification Integer
+            sizeSpec' = propagate AddW (HOLE :? Value (sizeOf must) :> Nil) size
+        when (isErrorLike sizeSpec') $ genError1 "Inconsistent size spec"
+        results0 <- case sizeSpec' of
+          TrueSpec -> genList (simplifySpec elemS') (simplifySpec foldS')
+          _ -> genSizedList sizeSpec' (simplifySpec elemS') (simplifySpec foldS')
+        results <-
+          explain
+            ( NE.fromList
+                [ "genInverse"
+                , "  fun = " ++ show fun
+                , "  results0 = " ++ show results0
+                , show $ "  elemS' =" <+> pretty elemS'
+                ]
+            )
+            $ mapM (genInverse fun elemS) results0
+        pureGen $ shuffle $ must ++ results
+
+addFun :: NumLike n => Fun '[n, n] n
+addFun = Fun AddW
+
+-- =============================================================================
+-- Lists and Foldy are mutually recursive
+-- Here are HasSpec instance for List and the Logic instances for List operators
+
+data ListW (args :: [Type]) (res :: Type) where
+  FoldMapW :: forall a b. (Foldy b, HasSpec a) => Fun '[a] b -> ListW '[[a]] b
+  SingletonListW :: HasSpec a => ListW '[a] [a]
+  AppendW :: (HasSpec a, Typeable a, Show a) => ListW '[[a], [a]] [a]
+
+-- ====================== Semantics for ListW
+
+instance Semantics ListW where
+  semantics = listSem
+
+instance Syntax ListW where
+  prettyWit AppendW (Lit n :> y :> Nil) p = Just $ parensIf (p > 10) $ "append_" <+> short n <+> prettyPrec 10 y
+  prettyWit AppendW (y :> Lit n :> Nil) p = Just $ parensIf (p > 10) $ "append_" <+> prettyPrec 10 y <+> short n
+  prettyWit _ _ _ = Nothing
+
+listSem :: ListW dom rng -> FunTy dom rng
+listSem (FoldMapW (Fun f)) = adds . map (semantics f)
+listSem SingletonListW = (: [])
+listSem AppendW = (++)
+
+instance Show (ListW d r) where
+  show AppendW = "append_"
+  show SingletonListW = "singletonList_"
+  show (FoldMapW n) = "(FoldMapW  " ++ show n ++ ")"
+
+deriving instance (Eq (ListW d r))
+
+-- ============= Logicbol for FoldMapW
+instance Logic ListW where
+  propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
+  propagate _ _ TrueSpec = TrueSpec
+  propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
+  propagate (FoldMapW f) (NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App (FoldMapW f) (v' :> Nil)) (v :-> ps)
+  propagate (FoldMapW f) (NilCtx HOLE) (TypeSpec ts cant) =
+    typeSpec (ListSpec Nothing [] TrueSpec TrueSpec $ FoldSpec f (TypeSpec ts cant))
+  propagate (FoldMapW f) (NilCtx HOLE) (MemberSpec es) =
+    typeSpec (ListSpec Nothing [] TrueSpec TrueSpec $ FoldSpec f (MemberSpec es))
+  propagate SingletonListW (NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App SingletonListW (v' :> Nil)) (v :-> ps)
+  propagate SingletonListW (NilCtx HOLE) (TypeSpec (ListSpec _ m sz e f) cant)
+    | length m > 1 =
+        ErrorSpec $
+          NE.fromList
+            [ "Too many required elements for SingletonListW : "
+            , "  " ++ show m
+            ]
+    | not $ 1 `conformsToSpec` sz =
+        ErrorSpec $ pure $ "Size spec requires too many elements for SingletonListW : " ++ show sz
+    | bad@(_ : _) <- filter (not . (`conformsToSpec` e)) m =
+        ErrorSpec $
+          NE.fromList
+            [ "The following elements of the must spec do not conforms to the elem spec:"
+            , show bad
+            ]
+    -- There is precisely one required element in the final list, so the argument to singletonList_ has to
+    -- be that element and we have to respect the cant and fold specs
+    | [a] <- m = equalSpec a <> notMemberSpec [z | [z] <- cant] <> reverseFoldSpec f
+    -- We have to respect the elem-spec, the can't spec, and the fold spec.
+    | otherwise = e <> notMemberSpec [a | [a] <- cant] <> reverseFoldSpec f
+  propagate SingletonListW (NilCtx HOLE) (MemberSpec xss) =
+    case [a | [a] <- NE.toList xss] of
+      [] ->
+        ErrorSpec $ (pure "PropagateSpec SingletonListW  with MemberSpec which has no lists of length 1")
+      (x : xs) -> MemberSpec (x :| xs)
+  propagate AppendW (HOLE :? Value x :> Nil) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App AppendW (v' :> Lit x :> Nil)) (v :-> ps)
+  propagate AppendW (Value x :! NilCtx HOLE) (SuspendedSpec v ps) =
+    constrained $ \v' -> Let (App AppendW (Lit x :> v' :> Nil)) (v :-> ps)
+  propagate AppendW ctx (TypeSpec (ts@ListSpec {listSpecElem = e}) cant)
+    | (HOLE :? Value (ys :: [a]) :> Nil) <- ctx
+    , Evidence <- prerequisites @[a]
+    , all (`conformsToSpec` e) ys =
+        TypeSpec (alreadyHave ys ts) (suffixedBy ys cant)
+    | (Value (ys :: [a]) :! NilCtx HOLE) <- ctx
+    , Evidence <- prerequisites @[a]
+    , all (`conformsToSpec` e) ys =
+        TypeSpec (alreadyHave ys ts) (prefixedBy ys cant)
+    | otherwise = ErrorSpec $ pure "The spec given to propagate for AppendW is inconsistent!"
+  propagate AppendW ctx (MemberSpec xss)
+    | (HOLE :? Value (ys :: [a]) :> Nil) <- ctx
+    , Evidence <- prerequisites @[a] =
+        -- Only keep the prefixes of the elements of xss that can
+        -- give you the correct resulting list
+        case suffixedBy ys (NE.toList xss) of
+          [] ->
+            ErrorSpec
+              ( NE.fromList
+                  [ "propagateSpecFun (append HOLE ys) with (MemberSpec xss)"
+                  , "there are no elements in xss with suffix ys"
+                  ]
+              )
+          (x : xs) -> MemberSpec (x :| xs)
+    | (Value (ys :: [a]) :! NilCtx HOLE) <- ctx
+    , Evidence <- prerequisites @[a] =
+        -- Only keep the suffixes of the elements of xss that can
+        -- give you the correct resulting list
+        case prefixedBy ys (NE.toList xss) of
+          [] ->
+            ErrorSpec
+              ( NE.fromList
+                  [ "propagateSpecFun (append ys HOLE) with (MemberSpec xss)"
+                  , "there are no elements in xss with prefix ys"
+                  ]
+              )
+          (x : xs) -> MemberSpec (x :| xs)
+
+  mapTypeSpec SingletonListW ts = typeSpec (ListSpec Nothing [] (equalSpec 1) (typeSpec ts) NoFold)
+  mapTypeSpec (FoldMapW g) ts =
+    constrained $ \x ->
+      unsafeExists $ \x' ->
+        Assert (x ==. appFun (foldMapFn g) x') <> toPreds x' ts
+
+
+foldMap_ :: forall a b. (Foldy b, HasSpec a) => (Term a -> Term b) -> Term [a] -> Term b
+foldMap_ f = appFun $ foldMapFn $ toFn $ f (V v)
+  where
+    v = Var (-1) "v" :: Var a
+    -- Turn `f (V v) = fn (gn (hn v))` into `composeFn fn (composeFn gn hn)`
+    -- Note: composeFn :: HasSpec b => Fun '[b] c -> Fun '[a] b -> Fun '[a] c
+    toFn :: forall x. HasCallStack => Term x -> Fun '[a] x
+    toFn (App fn (V v' :> Nil)) | Just Refl <- eqVar v v' = Fun fn
+    toFn (App fn (t :> Nil)) = composeFn (Fun fn) (toFn t)
+    toFn (V v') | Just Refl <- eqVar v v' = idFn
+    toFn _ = error "foldMap_ has not been given a function of the form \\ x -> f (g ... (h x))"
+
+sum_ ::
+  Foldy a =>
+  Term [a] ->
+  Term a
+sum_ = foldMap_ id
+
+foldMapFn :: forall a b. (HasSpec a, Foldy b) => Fun '[a] b -> Fun '[[a]] b
+foldMapFn f = Fun (FoldMapW f)
+
+-- | Used in the HasSpec [a] instance
+toPredsFoldSpec :: HasSpec a => Term [a] -> FoldSpec a -> Pred
+toPredsFoldSpec _ NoFold = TruePred
+toPredsFoldSpec x (FoldSpec funAB sspec) =
+  satisfies (appFun (foldMapFn funAB) x) sspec
+
+-- ============ Logicbol for ElemW
+
+
+infix 4 `elem_`
+elem_ :: (Sized [a], HasSpec a) => Term a -> Term [a] -> Term Bool
+elem_ = appTerm ElemW
+
+elemFn :: HasSpec a => Fun '[a, [a]] Bool
+elemFn = Fun ElemW
+
+-- ============= Logicbol for SingletonListW
+
+-- instance HasSpec a => Logic "singeltonList_" ListW '[a] [a] where
+--   propagate ctxt (ExplainSpec [] s) = propagate ctxt s
+--   propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
+--   propagate _ TrueSpec = TrueSpec
+--   propagate _ (ErrorSpec msgs) = ErrorSpec msgs
+--   propagate ctx _ =
+--     ErrorSpec $ pure ("Logic instance for SingletonListW with wrong number of arguments. " ++ show ctx)
+
+--   -- NOTE: this function over-approximates and returns a liberal spec.
+
+reverseFoldSpec :: FoldSpec a -> Specification a
+reverseFoldSpec NoFold = TrueSpec
+-- The single element list has to sum to something that obeys spec, i.e. `conformsToSpec (f a) spec`
+reverseFoldSpec (FoldSpec (Fun fn) spec) = propagate fn (HOLE :? Nil) spec
+
+singletonList_ :: (Sized [a], HasSpec a) => Term a -> Term [a]
+singletonList_ = appTerm SingletonListW
+
+singletonListFn :: forall a. HasSpec a => Fun '[a] [a]
+singletonListFn = Fun SingletonListW
+
+-- ============== Logicbol for AppendW
+
+-- instance (Sized [a], HasSpec a) => Logic "append_" ListW '[[a], [a]] [a] where
+--   propagate ctxt (ExplainSpec es s) = ExplainSpec es $ propagate ctxt s
+--   propagate _ TrueSpec = TrueSpec
+--   propagate _ (ErrorSpec msgs) = ErrorSpec msgs
+--   propagate ctx _ =
+--     ErrorSpec $ pure ("Logic instance for AppendW with wrong number of arguments. " ++ show ctx)
+
+prefixedBy :: Eq a => [a] -> [[a]] -> [[a]]
+prefixedBy ys xss = [drop (length ys) xs | xs <- xss, ys `isPrefixOf` xs]
+
+suffixedBy :: Eq a => [a] -> [[a]] -> [[a]]
+suffixedBy ys xss = [take (length xs - length ys) xs | xs <- xss, ys `isSuffixOf` xs]
+
+alreadyHave {- (Eq a, Typeable a, Show a) -} :: Eq a => [a] -> ListSpec a -> ListSpec a
+alreadyHave ys (ListSpec h m sz e f) =
+  ListSpec
+    -- Reduce the hint
+    (fmap (subtract (sizeOf ys)) h)
+    -- The things in `ys` have already been added to the list, no need to
+    -- require them too
+    (m \\ ys)
+    -- Reduce the required size
+    (constrained $ \x -> (x + Lit (sizeOf ys)) `satisfies` sz)
+    -- Nothing changes about what's a correct element
+    e
+    -- we have fewer things to sum now
+    (alreadyHaveFold ys f)
+
+alreadyHaveFold {- (Typeable a, Show a) => -} :: [a] -> FoldSpec a -> FoldSpec a
+alreadyHaveFold _ NoFold = NoFold
+alreadyHaveFold ys (FoldSpec fn spec) =
+  FoldSpec
+    fn
+    (constrained $ \s -> appTerm theAddFn s (foldMap_ (appFun fn) (Lit ys)) `satisfies` spec)
+
+appendFn :: forall a. (Sized [a], HasSpec a) => Fun '[[a], [a]] [a]
+appendFn = Fun AppendW
+
+append_ :: (Sized [a], HasSpec a) => Term [a] -> Term [a] -> Term [a]
+append_ = appTerm AppendW
+
+-- ================================================
+-- Sized instance for Lists
+
+instance Sized [a] where
+  sizeOf = toInteger . length
+  liftSizeSpec spec cant = typeSpec (ListSpec Nothing mempty (TypeSpec spec cant) TrueSpec NoFold)
+  liftMemberSpec xs = case NE.nonEmpty xs of
+    Nothing -> ErrorSpec (pure ("In liftMemberSpec for (Sized List) instance, xs is the empty list"))
+    Just zs -> typeSpec (ListSpec Nothing mempty (MemberSpec zs) TrueSpec NoFold)
+  sizeOfTypeSpec (ListSpec _ _ _ ErrorSpec {} _) = equalSpec 0
+  sizeOfTypeSpec (ListSpec _ must sizespec _ _) = sizespec <> geqSpec (sizeOf must)
+
+-- ==========================================================
+-- helpers
+
+knownLowerBound ::
+  (TypeSpec a ~ NumSpec a, Ord a, Enum a, Num a, MaybeBounded a) =>
+  Specification a ->
+  Maybe a
+knownLowerBound (ExplainSpec _ s) = knownLowerBound s
+knownLowerBound TrueSpec = lowerBound
+knownLowerBound (MemberSpec as) = Just $ minimum as
+knownLowerBound ErrorSpec {} = Nothing
+knownLowerBound SuspendedSpec {} = lowerBound
+knownLowerBound (TypeSpec (NumSpecInterval lo hi) cant) =
+  lower (lo <|> lowerBound) (hi <|> upperBound)
+  where
+    lower Nothing _ = Nothing
+    lower (Just a) Nothing = listToMaybe $ [a, a + 1 ..] \\ cant
+    lower (Just a) (Just b)
+      | a == b = a <$ guard (a `notElem` cant)
+      | otherwise = listToMaybe $ [a, a + 1 .. b] \\ cant
+
+isEmptyNumSpec ::
+  (TypeSpec a ~ NumSpec a, Ord a, Enum a, Num a, MaybeBounded a) => Specification a -> Bool
+isEmptyNumSpec = \case
+  ExplainSpec _ s -> isEmptyNumSpec s
+  ErrorSpec {} -> True
+  TrueSpec -> False
+  MemberSpec _ -> False -- MemberSpec always has at least one element (NE.NonEmpty)
+  SuspendedSpec {} -> False
+  TypeSpec i cant -> null $ enumerateInterval i \\ cant
+
+-- | Note: potentially infinite list
+enumerateInterval :: (Enum a, Num a, MaybeBounded a) => NumSpec a -> [a]
+enumerateInterval (NumSpecInterval lo hi) =
+  case (lo <|> lowerBound, hi <|> upperBound) of
+    (Nothing, Nothing) -> interleave [0 ..] [-1, -2 ..]
+    (Nothing, Just b) -> [b, b - 1 ..]
+    (Just a, Nothing) -> [a ..]
+    (Just a, Just b) -> [a .. b]
+  where
+    interleave [] ys = ys
+    interleave (x : xs) ys = x : interleave ys xs
+
+-- ========================================================================
+-- Operations to complete the Foldy instances genNumList, genListWithSize
+
+genNumList ::
+  forall a m.
+  ( MonadGenError m
+  , Arbitrary a
+  , Integral a
+  , MaybeBounded a
+  , TypeSpec a ~ NumSpec a
+  , Foldy a
+  , Random a
+  ) =>
+  Specification a ->
+  Specification a ->
+  GenT m [a]
+genNumList elemSIn foldSIn = do
+  let extraElemConstraints
+        | Just l <- knownLowerBound elemSIn
+        , 0 <= l
+        , Just u <- knownUpperBound foldSIn =
+            leqSpec u
+        | otherwise = TrueSpec
+      elemSIn' = elemSIn <> extraElemConstraints
+  normElemS <- normalize elemSIn'
+  normFoldS <- normalize foldSIn
+  let narrowedSpecs = narrowFoldSpecs (normElemS, normFoldS)
+  explain
+    ( NE.fromList
+        [ "Can't generate list of ints with fold constraint"
+        , "  elemSpec = " ++ show elemSIn
+        , "  normElemSpec = " ++ show normElemS
+        , "  foldSpec = " ++ show foldSIn
+        ]
+    )
+    $ gen narrowedSpecs 50 [] >>= pureGen . shuffle
+  where
+    normalize (ExplainSpec es x) = explainSpecOpt es <$> normalize x
+    normalize spec@SuspendedSpec {} = do
+      sz <- sizeT
+      spec' <- buildMemberSpec sz (100 :: Int) mempty spec
+      normalize $ spec'
+    normalize spec =
+      pure $
+        maybe mempty geqSpec lowerBound
+          <> maybe mempty leqSpec upperBound
+          <> spec
+
+    buildMemberSpec _ 0 es _ =
+      pure
+        ( memberSpecList
+            (Set.toList es)
+            (pure "In genNumList, in buildMemberSpec 'es' is the empty list, can't make a MemberSpec from that")
+        )
+    buildMemberSpec sz fuel es spec = do
+      me <- scaleT (const sz) $ tryGenT (genFromSpecT spec)
+      let sz'
+            | sz > 100 = sz
+            | isNothing me = 2 * sz + 1
+            | Just e <- me, Set.member e es = 2 * sz + 1
+            | otherwise = sz
+      buildMemberSpec
+        sz'
+        (fuel - 1)
+        (maybe es (flip Set.insert es) me)
+        spec
+
+    gen ::
+      forall m'. MonadGenError m' => (Specification a, Specification a) -> Int -> [a] -> GenT m' [a]
+    gen (elemS, foldS) fuel lst
+      | fuel <= 0
+      , not $ 0 `conformsToSpec` foldS =
+          genError $
+            NE.fromList
+              [ "Ran out of fuel in genNumList"
+              , "  elemSpec =" ++ show elemSIn
+              , "  foldSpec = " ++ show foldSIn
+              , "  lst = " ++ show (reverse lst)
+              ]
+      | ErrorSpec err <- foldS = genError err
+      | ErrorSpec {} <- elemS = pure lst -- At this point we know that foldS admits 0 (also this should be redundant)
+      | 0 `conformsToSpec` foldS = oneofT [pure lst, nonemptyList @GE] -- TODO: distribution
+      | otherwise = nonemptyList
+      where
+        isUnsat (elemSpec, foldSpec) = isEmptyNumSpec foldSpec || not (0 `conformsToSpec` foldSpec) && isEmptyNumSpec elemSpec
+        nonemptyList :: forall m''. MonadGenError m'' => GenT m'' [a]
+        nonemptyList = do
+          (x, specs') <-
+            explain
+              ( NE.fromList
+                  [ "Generating an element:"
+                  , "  elemS = " ++ show elemS
+                  , "  foldS = " ++ show foldS
+                  , "  fuel  = " ++ show fuel
+                  , "  lst   = " ++ show (reverse lst)
+                  ]
+              )
+              $ do
+                sz <- sizeT
+                x <- genFromSpecT elemS
+                let foldS' = propagate theAddFn (HOLE :? Value x :> Nil) foldS
+                    specs' = narrowByFuelAndSize (fromIntegral $ fuel - 1) sz (elemS, foldS')
+                pure (x, specs')
+                `suchThatT` not
+                . isUnsat
+                . snd
+          gen specs' (fuel - 1) (x : lst)
+
+narrowByFuelAndSize ::
+  forall a.
+  ( TypeSpec a ~ NumSpec a
+  , HasSpec a
+  , Arbitrary a
+  , Integral a
+  , Random a
+  , MaybeBounded a
+  ) =>
+  -- | Fuel
+  a ->
+  -- | Integer
+  Int ->
+  (Specification a, Specification a) ->
+  (Specification a, Specification a)
+narrowByFuelAndSize fuel size specpair =
+  loop (100 :: Int) (onlyOnceTransformations $ narrowFoldSpecs specpair)
+  where
+    loop 0 specs =
+      error $
+        unlines
+          [ "narrowByFuelAndSize loops:"
+          , "  fuel = " ++ show fuel
+          , "  size = " ++ show size
+          , "  specs = " ++ show specs
+          , "  narrowFoldSpecs spec = " ++ show (narrowFoldSpecs specs)
+          , "  go (narrowFoldSpecs specs) = " ++ show (go (narrowFoldSpecs specs))
+          ]
+    loop n specs = case go specs of
+      Nothing -> specs
+      Just specs' -> loop (n - 1) (narrowFoldSpecs specs')
+
+    -- Transformations only applied once. It's annoying to check if you're
+    -- going to change the spec with these so easier to just make sure you only apply
+    -- these once
+    onlyOnceTransformations (elemS, foldS)
+      | fuel == 1 = (elemS <> foldS, foldS)
+      | otherwise = (elemS, foldS)
+
+    canReach _ 0 s = s == 0
+    canReach e currentfuel s
+      -- You can reach it in one step
+      | s <= e = 0 < currentfuel
+      | otherwise = canReach e (currentfuel - 1) (s - e)
+
+    -- Precondition:
+    --   a is negative
+    --   the type has more negative numbers than positive ones
+    safeNegate a
+      | Just u <- upperBound
+      , a < negate u =
+          u
+      | otherwise = negate a
+
+    divCeil a b
+      | b * d < a = d + 1
+      | otherwise = d
+      where
+        d = a `div` b
+
+    go (simplifySpec -> elemS, simplifySpec -> foldS)
+      -- There is nothing we can do
+      | fuel == 0 = Nothing
+      | ErrorSpec {} <- elemS = Nothing
+      | ErrorSpec {} <- foldS = Nothing
+      -- Give up as early as possible
+      | Just 0 <- knownUpperBound elemS
+      , Just 0 <- knownLowerBound elemS
+      , not $ 0 `conformsToSpec` foldS =
+          Just (ErrorSpec (NE.fromList ["only 0 left"]), foldS)
+      -- Make sure we try to generate the smallest possible list
+      -- that gives you the right result - don't put a bunch of zeroes in
+      -- a _small_ (size 0) list.
+      | size == 0
+      , 0 `conformsToSpec` elemS =
+          Just (elemS <> notEqualSpec 0, foldS)
+      -- Member specs with non-zero elements, TODO: explain
+      | MemberSpec ys <- elemS
+      , let xs = NE.toList ys
+      , Just u <- knownUpperBound foldS
+      , all (0 <=) xs
+      , any (0 <) xs
+      , let xMinP = minimum $ filter (0 <) xs
+            possible x = x == u || xMinP <= u - x
+            xs' = filter possible xs
+      , xs' /= xs =
+          Just (memberSpecList (nubOrd xs') (pure ("None of " ++ show xs ++ " are possible")), foldS)
+      -- The lower bound on the number of elements is too low
+      | Just e <- knownLowerBound elemS
+      , e > 0
+      , Just s <- knownLowerBound foldS
+      , s > 0
+      , let c = divCeil s fuel
+      , e < c =
+          Just (elemS <> geqSpec c, foldS)
+      -- The upper bound on the number of elements is too high
+      | Just e <- knownUpperBound elemS
+      , e < 0
+      , Just s <- knownUpperBound foldS
+      , s < 0
+      , let c = divCeil (safeNegate s) fuel
+      , negate c < e
+      , maybe True (c <) (knownUpperBound elemS) =
+          Just (elemS <> leqSpec c, foldS)
+      -- It's time to stop generating negative numbers
+      | Just s <- knownLowerBound foldS
+      , s > 0
+      , Just e <- knownUpperBound elemS
+      , e > 0
+      , not $ canReach e (fuel `div` 2 + 1) s
+      , maybe True (<= 0) (knownLowerBound elemS) =
+          Just (elemS <> gtSpec 0, foldS)
+      -- It's time to stop generating positive numbers
+      | Just s <- knownUpperBound foldS
+      , s < 0
+      , Just e <- knownLowerBound elemS
+      , e < 0
+      , not $ canReach (safeNegate e) (fuel `div` 2 + 1) (safeNegate s)
+      , maybe True (0 <=) (knownUpperBound elemS) =
+          Just (elemS <> ltSpec 0, foldS)
+      -- There is nothing we need to do
+      | otherwise = Nothing
+
+narrowFoldSpecs ::
+  forall a.
+  ( TypeSpec a ~ NumSpec a
+  , HasSpec a
+  , Arbitrary a
+  , Integral a
+  , Random a
+  , MaybeBounded a
+  ) =>
+  (Specification a, Specification a) ->
+  (Specification a, Specification a)
+narrowFoldSpecs specs = maybe specs narrowFoldSpecs (go specs)
+  where
+    -- Note: make sure there is some progress when returning Just or this will loop forever
+    go (simplifySpec -> elemS, simplifySpec -> foldS) = case (elemS, foldS) of
+      -- Empty foldSpec
+      (_, ErrorSpec {}) -> Nothing
+      _ | isEmptyNumSpec foldS -> Just (elemS, ErrorSpec (NE.fromList ["Empty foldSpec:", show foldS]))
+      -- Empty elemSpec
+      (ErrorSpec {}, MemberSpec ys) | NE.toList ys == [0] -> Nothing
+      (ErrorSpec {}, _)
+        | 0 `conformsToSpec` foldS -> Just (elemS, MemberSpec (pure 0))
+        | otherwise ->
+            Just
+              ( elemS
+              , ErrorSpec $
+                  NE.fromList
+                    [ "Empty elemSpec and non-zero foldSpec"
+                    , show $ indent 2 $ "elemSpec =" /> pretty elemS
+                    , show $ indent 2 $ "foldSpec =" /> pretty foldS
+                    ]
+              )
+      -- We can reduce the size of the `elemS` interval when it is
+      -- `[l, u]` or `[l, ∞)` given that `0 <= l` and we have
+      -- an upper bound on the sum - we can't pick things bigger than the
+      -- upper bound.
+      _
+        | Just lo <- knownLowerBound elemS
+        , 0 <= lo
+        , Just hi <- knownUpperBound foldS
+        , -- Check that we will actually be making the set smaller
+          fromMaybe True ((hi <) <$> knownUpperBound elemS) ->
+            Just (elemS <> typeSpec (NumSpecInterval (Just lo) (Just hi)), foldS)
+      -- We can reduce the size of the foldS set by bumping the lower bound when
+      -- there is a positive lower bound on the elemS, we can't generate things smaller
+      -- than the lower bound on `elemS`.
+      _
+        | Just lo <- knownLowerBound elemS
+        , 0 <= lo
+        , not $ 0 `conformsToSpec` foldS
+        , -- Check that we will actually be making the set smaller
+          fromMaybe True ((lo >) <$> knownLowerBound foldS) ->
+            Just (elemS, foldS <> typeSpec (NumSpecInterval (Just lo) Nothing))
+      -- NOTE: this is far from sufficient, but it's good enough of an approximation
+      -- to avoid the worst failures.
+      _
+        | Just lo <- knownLowerBound elemS
+        , Just loS <- knownLowerBound foldS
+        , Just hi <- knownUpperBound elemS
+        , Just hiS <- knownUpperBound foldS
+        , hi < loS
+        , lo > hiS - lo ->
+            Just
+              ( ErrorSpec $ NE.fromList ["Can't solve diophantine equation"]
+              , ErrorSpec $ NE.fromList ["Can't solve diophantine equation"]
+              )
+      _ -> Nothing
+
+-- =====================================================================================
+-- Like genList, but generate a list whose size conforms to s SizeSpec
+-- =====================================================================================
+
+-- | Generate a list with 'sizeSpec' elements, that add up to a total that conforms
+--   to 'foldSpec'. Every element in the list should conform to 'elemSpec'
+genListWithSize ::
+  forall a m.
+  (Foldy a, TypeSpec a ~ NumSpec a, MonadGenError m, Random a, Integral a) =>
+  Specification Integer -> Specification a -> Specification a -> GenT m [a]
+genListWithSize sizeSpec elemSpec foldSpec
+  | TrueSpec <- sizeSpec = genList elemSpec foldSpec
+  | ErrorSpec _ <- sizeSpec <> geqSpec 0 =
+      fatalError
+        ( NE.fromList
+            [ "genListWithSize called with possible negative size"
+            , "  sizeSpec = " ++ specName sizeSpec
+            , "  elemSpec = " ++ specName elemSpec
+            , "  foldSpec = " ++ specName foldSpec
+            ]
+        )
+  | otherwise = do
+      total <- genFromSpecT foldSpec
+      -- The compatible sizes for the list, for a given choice of total
+      let sizeAdjusted =
+            if total /= 0
+              then sizeSpec <> gtSpec 0 -- if total is not zero, we better not pick a 0 size
+              else
+                if noNegativeValues @a
+                  then sizeSpec <> equalSpec 0 -- if it is zero, and negative numbers not allowed, then only possible size is 0
+                  else sizeSpec <> gtSpec 0
+          message =
+            [ "\nGenSizedList fails"
+            , "sizespec = " ++ specName sizeSpec
+            , "elemSpec = " ++ specName elemSpec
+            , "foldSpec = " ++ specName foldSpec
+            , "total choosen from foldSpec = " ++ show total
+            , "size adjusted for total = " ++ show sizeAdjusted
+            ]
+      push message $ do
+        count <- genFromSpecT sizeAdjusted
+        case compare total 0 of
+          EQ ->
+            if count == 0
+              then pure []
+              else pickPositive elemSpec total count
+          GT -> pickPositive elemSpec total count
+          LT -> pickNegative elemSpec total count
+
+pickPositive ::
+  forall t m.
+  (Integral t, Random t, MonadGenError m, TypeSpec t ~ NumSpec t, Foldy t) =>
+  Specification t -> t -> Integer -> GenT m [t]
+pickPositive elemspec total count = do
+  sol <-
+    pureGen $
+      pickAll
+        (minFromSpec 0 elemspec) -- Search from [0..total] unless elemspec says otherwise
+        (maxFromSpec total elemspec)
+        (predSpecPair elemspec)
+        total
+        (fromInteger count)
+        (Cost 0)
+  case snd sol of
+    No msgs -> fatalError (NE.fromList msgs)
+    Yes (x :| _) -> pure x
+
+pickNegative ::
+  forall t m.
+  (Integral t, Random t, MonadGenError m, TypeSpec t ~ NumSpec t, HasSpec t) =>
+  Specification t -> t -> Integer -> GenT m [t]
+
+-- | total can be either negative, or 0. If it is 0, we want count numbers that add to zero
+pickNegative elemspec total count = do
+  sol <-
+    pureGen $
+      pickAll
+        -- Recall 'total' is negative here.
+        -- Here is a graphic of the range we search in (smallest .. largest)
+        -- [(total+n) .. total .. 0 .. (0-n)],  where n = (total `div` 4) which is negative.
+        (minFromSpec (total + (total `div` 4)) elemspec)
+        (maxFromSpec (0 - (total `div` 4)) elemspec)
+        (predSpecPair elemspec)
+        total
+        (fromInteger count)
+        (Cost 0)
+  case snd sol of
+    No msgs -> fatalError (NE.fromList msgs)
+    Yes (x :| _) -> pure x
+
+specName :: forall a. HasSpec a => Specification a -> String
+specName (ExplainSpec [x] _) = x
+specName x = show x
+
+predSpecPair :: forall a. HasSpec a => Specification a -> (String, a -> Bool)
+predSpecPair spec = (specName spec, (`conformsToSpec` spec))
+
+-- | The smallest number admitted by the spec, if we can find one.
+--   if not return the defaultValue 'dv'
+minFromSpec ::
+  forall n.
+  (Ord n, TypeSpec n ~ NumSpec n) =>
+  n -> Specification n -> n
+minFromSpec dv (ExplainSpec _ spec) = minFromSpec @n dv spec
+minFromSpec dv TrueSpec = dv
+minFromSpec dv s@(SuspendedSpec _ _) =
+  case simplifySpec s of
+    SuspendedSpec {} -> dv
+    x -> minFromSpec @n dv x
+minFromSpec dv (ErrorSpec _) = dv
+minFromSpec _ (MemberSpec xs) = minimum xs
+minFromSpec dv (TypeSpec (NumSpecInterval lo _) _) = maybe dv id lo
+
+-- | The largest number admitted by the spec, if we can find one.
+--   if not return the defaultValue 'dv'
+maxFromSpec ::
+  forall n.
+  (Ord n, TypeSpec n ~ NumSpec n) =>
+  n -> Specification n -> n
+maxFromSpec dv (ExplainSpec _ spec) = maxFromSpec @n dv spec
+maxFromSpec dv TrueSpec = dv
+maxFromSpec dv s@(SuspendedSpec _ _) =
+  case simplifySpec s of
+    SuspendedSpec {} -> dv
+    x -> maxFromSpec @n dv x
+maxFromSpec dv (ErrorSpec _) = dv
+maxFromSpec _ (MemberSpec xs) = maximum xs
+maxFromSpec dv (TypeSpec (NumSpecInterval _ hi) _) = maybe dv id hi
+
+-- ======================================================================
+-- Size and its 'generic' operations over Sized types.
+-- ======================================================================
+
+data SizeW (dom :: [Type]) rng :: Type where
+  SizeOfW :: (Sized n, HasSpec n) => SizeW '[n] Integer
+
+deriving instance Eq (SizeW ds r)
+
+instance Show (SizeW d r) where
+  show SizeOfW = "sizeOf_"
+
+instance Semantics SizeW where
+  semantics SizeOfW = sizeOf -- From the Sized class.
+
+instance Syntax SizeW
+
+instance Logic SizeW where
+  propagate f ctxt (ExplainSpec [] s) = propagate f ctxt s
+  propagate f ctxt (ExplainSpec es s) = ExplainSpec es $ propagate f ctxt s
+  propagate _ _ TrueSpec = TrueSpec
+  propagate _ _ (ErrorSpec msgs) = ErrorSpec msgs
+  propagate SizeOfW (NilCtx HOLE) (SuspendedSpec v ps) = constrained $ \v' -> Let (App SizeOfW (v' :> Nil)) (v :-> ps)
+  propagate SizeOfW (NilCtx HOLE) (TypeSpec ts cant) = liftSizeSpec ts cant
+  propagate SizeOfW (NilCtx HOLE) (MemberSpec es) = liftMemberSpec (NE.toList es)
+
+  mapTypeSpec (SizeOfW :: SizeW '[a] b) ts =
+    constrained $ \x ->
+      unsafeExists $ \x' -> Assert (x ==. sizeOf_ x') <> toPreds @a x' ts
+
+sizeOfFn :: forall a. (HasSpec a, Sized a) => Fun '[a] Integer
+sizeOfFn = Fun SizeOfW
+
+-- ======================================
+
+rangeSize :: Integer -> Integer -> SizeSpec
+rangeSize a b | a < 0 || b < 0 = error ("Negative Int in call to rangeSize: " ++ show a ++ " " ++ show b)
+rangeSize a b = NumSpecInterval (Just a) (Just b)
+
+between :: (HasSpec a, TypeSpec a ~ NumSpec a) => a -> a -> Specification a
+between lo hi = TypeSpec (NumSpecInterval (Just lo) (Just hi)) []
+
+-- | The widest interval whose largest element is admitted by the original spec
+maxSpec :: Specification Integer -> Specification Integer
+maxSpec (ExplainSpec es s) = explainSpecOpt es (maxSpec s)
+maxSpec TrueSpec = TrueSpec
+maxSpec s@(SuspendedSpec _ _) =
+  constrained $ \x -> unsafeExists $ \y -> [y `satisfies` s, Explain (pure "maxSpec on SuspendedSpec") $ Assert (x <=. y)]
+maxSpec (ErrorSpec xs) = ErrorSpec xs
+maxSpec (MemberSpec xs) = leqSpec (maximum xs)
+maxSpec (TypeSpec (NumSpecInterval _ hi) bad) = TypeSpec (NumSpecInterval Nothing hi) bad
+
+-- How to constrain the size of any type, with a Sized instance
+hasSize :: (HasSpec t, Sized t) => SizeSpec -> Specification t
+hasSize sz = liftSizeSpec sz []
+
+-- =================================================
+infix 4 +.
+(+.) :: NumLike a => Term a -> Term a -> Term a
+(+.) = addFn
+
+negate_ :: NumLike a => Term a -> Term a
+negate_ = negateFn
+
+infix 4 -.
+(-.) :: Numeric n => Term n -> Term n -> Term n
+(-.) x y = addFn x (negateFn y)
+
+instance HasSpec (Ratio Integer) where
+  type TypeSpec (Ratio Integer) = NumSpec (Ratio Integer)
+  emptySpec = emptyNumSpec
+  combineSpec = combineNumSpec
+  genFromTypeSpec = genFromNumSpec
+  shrinkWithTypeSpec = shrinkWithNumSpec
+  conformsTo = conformsToNumSpec
+  toPreds = toPredsNumSpec
+  cardinalTypeSpec _ = TrueSpec
+  guardTypeSpec = guardNumSpec
+
+instance HasSpec Natural where
+  type TypeSpec Natural = NumSpec Natural
+  emptySpec = emptyNumSpec
+  combineSpec = combineNumSpec
+  genFromTypeSpec = genFromNumSpec
+  shrinkWithTypeSpec = shrinkWithNumSpec
+  conformsTo = conformsToNumSpec
+  toPreds = toPredsNumSpec
+  cardinalTypeSpec (NumSpecInterval (Just lo) (Just hi)) =
+    if hi >= lo
+      then MemberSpec (pure (fromIntegral @Natural @Integer (hi - lo + 1)))
+      else MemberSpec (pure 0)
+  cardinalTypeSpec (NumSpecInterval Nothing (Just hi)) =
+    MemberSpec (pure (fromIntegral @Natural @Integer hi + 1))
+  cardinalTypeSpec _ = TrueSpec
+  guardTypeSpec = guardNumSpec
+
+instance HasSpec Word8 where
+  type TypeSpec Word8 = NumSpec Word8
+  emptySpec = emptyNumSpec
+  combineSpec = combineNumSpec
+  genFromTypeSpec = genFromNumSpec
+  shrinkWithTypeSpec = shrinkWithNumSpec
+  conformsTo = conformsToNumSpec
+  toPreds = toPredsNumSpec
+  cardinalTypeSpec = cardinalNumSpec
+  typeSpecOpt = notInNumSpec
+  guardTypeSpec = guardNumSpec
+
+instance HasSpec Word16 where
+  type TypeSpec Word16 = NumSpec Word16
+  emptySpec = emptyNumSpec
+  combineSpec = combineNumSpec
+  genFromTypeSpec = genFromNumSpec
+  shrinkWithTypeSpec = shrinkWithNumSpec
+  conformsTo = conformsToNumSpec
+  toPreds = toPredsNumSpec
+  cardinalTypeSpec = cardinalNumSpec
+  guardTypeSpec = guardNumSpec
+
+instance HasSpec Word32 where
+  type TypeSpec Word32 = NumSpec Word32
+  emptySpec = emptyNumSpec
+  combineSpec = combineNumSpec
+  genFromTypeSpec = genFromNumSpec
+  shrinkWithTypeSpec = shrinkWithNumSpec
+  conformsTo = conformsToNumSpec
+  toPreds = toPredsNumSpec
+  cardinalTypeSpec = cardinalNumSpec
+  guardTypeSpec = guardNumSpec
+
+instance HasSpec Word64 where
+  type TypeSpec Word64 = NumSpec Word64
+  emptySpec = emptyNumSpec
+  combineSpec = combineNumSpec
+  genFromTypeSpec = genFromNumSpec
+  shrinkWithTypeSpec = shrinkWithNumSpec
+  conformsTo = conformsToNumSpec
+  toPreds = toPredsNumSpec
+  cardinalTypeSpec = cardinalNumSpec
+  guardTypeSpec = guardNumSpec
+
+instance HasSpec Int8 where
+  type TypeSpec Int8 = NumSpec Int8
+  emptySpec = emptyNumSpec
+  combineSpec = combineNumSpec
+  genFromTypeSpec = genFromNumSpec
+  shrinkWithTypeSpec = shrinkWithNumSpec
+  conformsTo = conformsToNumSpec
+  toPreds = toPredsNumSpec
+  cardinalTypeSpec = cardinalNumSpec
+  guardTypeSpec = guardNumSpec
+
+instance HasSpec Int16 where
+  type TypeSpec Int16 = NumSpec Int16
+  emptySpec = emptyNumSpec
+  combineSpec = combineNumSpec
+  genFromTypeSpec = genFromNumSpec
+  shrinkWithTypeSpec = shrinkWithNumSpec
+  conformsTo = conformsToNumSpec
+  toPreds = toPredsNumSpec
+  cardinalTypeSpec = cardinalNumSpec
+  guardTypeSpec = guardNumSpec
+
+instance HasSpec Int32 where
+  type TypeSpec Int32 = NumSpec Int32
+  emptySpec = emptyNumSpec
+  combineSpec = combineNumSpec
+  genFromTypeSpec = genFromNumSpec
+  shrinkWithTypeSpec = shrinkWithNumSpec
+  conformsTo = conformsToNumSpec
+  toPreds = toPredsNumSpec
+  cardinalTypeSpec = cardinalNumSpec
+  guardTypeSpec = guardNumSpec
+
+instance HasSpec Int64 where
+  type TypeSpec Int64 = NumSpec Int64
+  emptySpec = emptyNumSpec
+  combineSpec = combineNumSpec
+  genFromTypeSpec = genFromNumSpec
+  shrinkWithTypeSpec = shrinkWithNumSpec
+  conformsTo = conformsToNumSpec
+  toPreds = toPredsNumSpec
+  cardinalTypeSpec = cardinalNumSpec
+  guardTypeSpec = guardNumSpec
+
+instance HasSpec Float where
+  type TypeSpec Float = NumSpec Float
+  emptySpec = emptyNumSpec
+  combineSpec = combineNumSpec
+  genFromTypeSpec = genFromNumSpec
+  shrinkWithTypeSpec = shrinkWithNumSpec
+  conformsTo = conformsToNumSpec
+  toPreds = toPredsNumSpec
+  cardinalTypeSpec _ = TrueSpec
+  guardTypeSpec = guardNumSpec

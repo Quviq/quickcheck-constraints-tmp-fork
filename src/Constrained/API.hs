@@ -159,7 +159,6 @@ import Constrained.Base (
   notEqualSpec,
   notMemberSpec,
   toGeneric_,
-  pattern Elem,
   pattern FromGeneric,
   pattern ToGeneric,
  )
@@ -181,54 +180,8 @@ import Constrained.NumSpec (
   negateFn,
  )
 
-import Constrained.Spec.SumProd (
-  IsNormalType,
-  PairSpec (..),
-  branch,
-  branchW,
-  cJust_,
-  cNothing_,
-  caseOn,
-  chooseSpec,
-  con,
-  constrained',
-  forAll',
-  fst_,
-  isCon,
-  isJust,
-  injLeft_,
-  left_,
-  match,
-  onCon,
-  onJust,
-  pair_,
-  prodFst_,
-  prodSnd_,
-  prod_,
-  reify',
-  injRight_,
-  right_,
-  sel,
-  snd_,
- )
-import Constrained.TheKnot (
-  debugSpec,
-  genFromSpec,
-  genFromSpecT,
-  genFromSpecWithSeed,
-  ifElse,
-  not_,
-  or_,
-  printPlan,
-  simplifySpec,
-  simplifyTerm,
-  whenTrue,
-  (<.),
-  (<=.),
-  (==.),
-  (>.),
-  (>=.),
- )
+import Constrained.Spec.SumProd
+import Constrained.TheKnot
 
 import Constrained.Syntax (
   assert,
@@ -247,18 +200,6 @@ import Constrained.Syntax (
   unsafeExists,
  )
 
-import Constrained.Spec.ListFoldy (
-  Foldy (..),
-  append_,
-  compose_,
-  elem_,
-  flip_,
-  foldMap_,
-  id_,
-  singletonList_,
-  sum_,
- )
-
 import Constrained.Spec.Map (
   MapSpec (..),
   dom_,
@@ -267,7 +208,6 @@ import Constrained.Spec.Map (
   rng_,
   sndSpec,
  )
-import Constrained.Spec.Num (negate_, (+.), (-.))
 import Constrained.Spec.Set (
   SetSpec (..),
   SetW (..),
@@ -277,15 +217,6 @@ import Constrained.Spec.Set (
   singleton_,
   subset_,
   union_,
- )
-import Constrained.Spec.Size (
-  Sized (sizeOf),
-  between,
-  genFromSizeSpec,
-  hasSize,
-  maxSpec,
-  rangeSize,
-  sizeOf_,
  )
 import Constrained.Syntax (var)
 

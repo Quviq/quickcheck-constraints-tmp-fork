@@ -19,7 +19,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE UndecidableSuperClasses #-}
 {-# LANGUAGE ViewPatterns #-}
-{-# OPTIONS_GHC -Wno-orphans #-}
+{-# OPTIONS_GHC -Wno-orphans -Wno-name-shadowing #-}
 
 -- The pattern completeness checker is much weaker before ghc-9.0. Rather than introducing redundant
 -- cases and turning off the overlap check in newer ghc versions we disable the check for old
@@ -36,8 +36,6 @@ import Constrained.Core
 import Constrained.GenT
 import Constrained.List
 import Constrained.NumSpec
-import Constrained.Spec.ListFoldy
-import Constrained.Spec.Size (Sized (..), maxSpec, sizeOf_)
 import Constrained.Syntax
 import Constrained.TheKnot
 import Data.Foldable

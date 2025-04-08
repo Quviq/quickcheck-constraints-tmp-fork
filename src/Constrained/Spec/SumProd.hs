@@ -68,10 +68,8 @@ import Constrained.Conformance (conformsToSpec, satisfies)
 import Constrained.Core
 import Constrained.Generic
 import Constrained.List
-import Constrained.Spec.ListFoldy
 import Constrained.Syntax (exists, forAll, letBind, mkCase, reify)
 import Constrained.TheKnot
-import qualified Data.List.NonEmpty as NE
 import Data.Typeable (Typeable)
 import GHC.TypeLits (Symbol)
 import GHC.TypeNats

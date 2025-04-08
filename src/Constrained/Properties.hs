@@ -18,7 +18,6 @@ module Constrained.Properties where
 import Constrained.List
 import Constrained.Spec.Map
 import Constrained.Spec.Set
-import Constrained.Spec.Size
 import Constrained.Spec.SumProd
 import Constrained.NumSpec
 import Constrained.API
@@ -26,7 +25,6 @@ import Constrained.Base
 import Constrained.Conformance
 import Constrained.Core
 import Constrained.GenT
-import Constrained.Spec.ListFoldy
 import Constrained.TheKnot
 import qualified Data.List.NonEmpty as NE
 import Data.Map (Map)
