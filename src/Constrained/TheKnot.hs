@@ -1744,9 +1744,6 @@ instance Logic ElemW where
   rewriteRules ElemW (t :> Lit [a] :> Nil) Evidence = Just $ t ==. (Lit a)
   rewriteRules _ _ _ = Nothing
 
-  -- saturate ElemW (FromGeneric (Product (x :: Term m) (y :: Term n)) :> Lit zs :> Nil) = case zs of
-  --       (w : ws) -> [ElemPred True x (fmap fst (w :| ws))]
-  --       [] -> [FalsePred (pure $ "empty list, zs , in elem_ " ++ show (x, y) ++ " zs")]
   saturate ElemW (x :> Lit (y : ys) :> Nil) = [satisfies x (MemberSpec (y :| ys))]
   saturate _ _ = []
 
